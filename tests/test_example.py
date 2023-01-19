@@ -1,17 +1,23 @@
-import pytest
-from my_package.example import add_one
+# import matplotlib.pyplot as plt
+from jaxcross.cross_correlation import CCF, Template
 
-def test_type():
-    """
-    Test addition with float, int and strung.
-    """
-    assert add_one(1) == 2
-    assert add_one(1.1) == 2.1
-    assert add_one('1') == '11'
+import jax.numpy as np
+from jax import random, devices
+print(devices())
+key = random.PRNGKey(0)
+size = 5000
+mx = np.linspace(0, size*0.1, size)
+my = np.sin(2*mx+0.1)
+x = mx + 0.1*np.min(np.diff(mx))
 
-def test_error():
-    """
-    Test addition with list.
-    """
-    with pytest.raises(TypeError):
-        add_one([1])
+
+noise = random.normal(key, (size,))
+y = np.tile(my, (400,1)) + 0.5*noise
+
+RV = np.arange(-1000., 1002., 12.)
+ccf = CCF(RV, Template(mx,my))
+ccf_map = ccf(x,y)
+print('jaxcross has been successfully installed!')
+
+# plt.imshow(ccf_map)
+# plt.show()

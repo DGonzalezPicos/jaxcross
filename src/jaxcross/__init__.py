@@ -1,3 +1,6 @@
+from .cross_correlation import CCF
+from .template import Template
+
 import sys
 
 if sys.version_info >= (3, 8):
