@@ -1,5 +1,6 @@
 from .cross_correlation import CCF
 from .template import Template
+from .crires import CRIRES
 
 import sys
 

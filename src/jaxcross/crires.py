@@ -76,17 +76,68 @@ class CRIRES:
             setattr(self, attr, fun2(fun1(self.__dict__[attr])))
 
         return self
+    
+    def normalise(self):
+        med = np.nanmedian(self.flux, axis=0, keepdims=True)
+        self.flux = self.flux / med
+        self.flux_err = self.flux_err / med
+        return self
+    
+    
+    def PCA(self, N=1, nOrder=0, nDet=0, ax=None):
+        '''PCA decomposition on reconstruction with the first N components removed
+        Implemented in `numpy` for now. JAX `jnp.linalg.svd` is not working...'''
+        f = self.flux[:,nOrder, nDet,:]
+        self.nans = numpy.isnan(f[0,])
+        # sub_med = lambda x: numpy.subtract(x, np.nanmedian(x))
+        f_nonans = f[:,~self.nans]
+        f_nonans = (f_nonans.T - numpy.nanmedian(f_nonans, axis=1)).T
+        print(f_nonans.shape)
+
+        # Compute full SVD
+        u, s, vh = numpy.linalg.svd(f_nonans, full_matrices=False, compute_uv=True)
+        s1 = numpy.copy(s)
+        s1[0:N] = 0.
+        W=numpy.diag(s1)
+        f_rec = numpy.dot(u,numpy.dot(W,vh))
+        
+        new_f = f.at[:,~self.nans].set(f_rec)
+        self.flux = self.flux.at[:,nOrder, nDet,:].set(new_f)
+        
+        if ax is not None: self.imshow(ax=ax, nOrder=nOrder, nDet=nDet)
+        return self
+    
+    def gaussian_filter(self, window=15., nOrder=0, nDet=0, ax=None):
+        from scipy import ndimage
+        
+        f = self.flux[:,nOrder, nDet,:]
+        f_nonans = f[:,~self.nans]
+        
+        lowpass = ndimage.gaussian_filter(f_nonans, [0, window])
+        
+        new_f = f.at[:,~self.nans].set(f_nonans-lowpass)
+        self.flux = self.flux.at[:,nOrder, nDet,:].set(new_f)
+        if ax is not None: self.imshow(ax=ax, nOrder=nOrder, nDet=nDet)
+        return self
         
 
 if __name__ == '__main__':
+    
     import pathlib
     path = pathlib.Path("/home/dario/phd/pycrires/pycrires/product/obs_staring/")
     files = sorted(path.glob("cr2res_obs_staring_extracted_*.fits"))
     
+    nOrder, nDet = 1,1
     crires = CRIRES(files).read()
-    fig, ax = plt.subplots(2,1,figsize=(10,4))
-    crires.imshow(0,0, ax=ax[0])
-    crires.trim(50,50)
-    crires.imshow(0,0, ax=ax[1])
+
+    fig, ax = plt.subplots(5,1,figsize=(10,4))
+    crires.imshow(nOrder, nDet, ax=ax[0])
+    
+    crires.trim(20,20)
+    crires.imshow(nOrder, nDet, ax=ax[1])
+    crires.normalise()
+    crires.imshow(nOrder, nDet, ax=ax[2])
+    crires.PCA(4, 0, 0, ax=ax[3])
+    crires.gaussian_filter(15, 0, 0, ax=ax[4])
     plt.show()
 

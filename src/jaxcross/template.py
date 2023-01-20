@@ -22,6 +22,19 @@ class Template:
         ax.plot(self.wave, self.flux, **kwargs)
         return None
     
+    def sort(self):
+        '''
+        Sort `wlt` and `flux` vectors by wavelength.
+
+        Returns
+        sorted Template
+        -------
+        '''
+        sort = np.argsort(self.wave)
+        self.wave = self.wave[sort]
+        self.flux = self.flux[sort]
+        return self
+    
 if __name__ == '__main__':
     size = 4000
     mx = np.linspace(0, size*0.1, size)

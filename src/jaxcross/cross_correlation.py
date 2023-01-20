@@ -1,13 +1,13 @@
 # import numpy as np
 
-from scipy.interpolate import splev, splrep
+from scipy.interpolate import splev, splrep, interp1d
 c = 2.998e5 # km/s
 
 import jax.numpy as np
 from jax import vmap, devices, jit
 from functools import wraps
 import time
-from jaxcross import Template
+import matplotlib.pyplot as plt
 
 
 def timeit(func):
@@ -28,17 +28,22 @@ class CCF:
         self.RV = RV
         self.model = model
         self.beta = 1 - (self.RV/c) 
-        self.cs = splrep(self.model.x, med_sub(self.model.y))
+        # self.cs = splrep(self.model.wave, med_sub(self.model.flux))
+        self.inter = interp1d(self.model.wave, med_sub(self.model.flux), kind='linear')
                 
                 
     def shift_template(self, datax):
-        self.g = splev(np.outer(datax,self.beta), self.cs)
+        # self.g = splev(np.outer(datax,self.beta), self.cs)
+        self.g = self.inter(np.outer(datax,self.beta))
+        print(self.g.shape)
         return self
      
     
     @timeit
     def xcorr(self, f):
-      return np.dot(med_sub(f) / np.var(f, axis=0), self.g)
+    #   return np.dot(med_sub(f) / np.var(f, axis=0), self.g)
+        return np.dot(f, self.g)
+    
     
     
     def __call__(self, datax, datay, jit_enable=True):
@@ -80,6 +85,8 @@ if __name__ == '__main__':
     from jax import random, devices
     import matplotlib.pyplot as plt
     import jax
+    from jaxcross import Template
+
     print(devices())
     # Global flag to set a specific platform, must be used at startup.
     jax.config.update('jax_platform_name', 'cpu') # USE CPU --> not working now
