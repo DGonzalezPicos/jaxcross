@@ -34,7 +34,8 @@ class CCF:
                 
     def shift_template(self, datax):
         # self.g = splev(np.outer(datax,self.beta), self.cs)
-        self.g = self.inter(np.outer(datax,self.beta))
+        self.nans = np.isnan(datax)
+        self.g = self.inter(np.outer(datax[~self.nans],self.beta))
         print(self.g.shape)
         return self
      
@@ -50,9 +51,9 @@ class CCF:
         self.shift_template(datax)
         if jit_enable:
             jit_ccf = jit(self.xcorr)
-            self.map = jit_ccf(datay)
+            self.map = jit_ccf(datay[:,~self.nans])
             return self
-        self.map = self.xcorr(datay)
+        self.map = self.xcorr(datay[:,~self.nans])
         return self
     
     def imshow(self, ax=None, fig=None, title='', **kwargs):

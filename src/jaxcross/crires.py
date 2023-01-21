@@ -2,6 +2,7 @@ import jax.numpy as np
 import numpy
 from astropy.io import fits
 import matplotlib.pyplot as plt
+import copy
 
 class CRIRES:
     def __init__(self, files):
@@ -50,47 +51,85 @@ class CRIRES:
         swap = lambda x: numpy.swapaxes(x, 0, 1) # swap detector and order axes
         return swap(wave), swap(flux), swap(flux_err)
     
-    def imshow(self, nOrder, nDet, ax=None, fig=None, **kwargs):
-        wave, flux = self.wave[:,nOrder, nDet,:], self.flux[:,nOrder, nDet,:]
+    def copy(self):
+        return copy.deepcopy(self)
+    
+    def imshow(self, ax=None, fig=None, **kwargs):
         ax = ax or plt.gca()
-        y1, y2 = 0, flux.shape[0]
-        ext = [np.nanmin(wave), np.nanmax(wave), y1, y2]
-        im = ax.imshow(flux,origin='lower',aspect='auto',
+        y1, y2 = 0, self.flux.shape[0]
+        ext = [np.nanmin(self.wave), np.nanmax(self.wave), y1, y2]
+        im = ax.imshow(self.flux,origin='lower',aspect='auto',
                         extent=ext, **kwargs)
         if not fig is None: fig.colorbar(im, ax=ax, pad=0.05)
         current_cmap = plt.cm.get_cmap()
         current_cmap.set_bad(color='white')
         return im
-    def plot_master(self, nOrder, nDet, ax=None, **kwargs):
-        wave, flux = self.wave[:,nOrder, nDet,:], self.flux[:,nOrder, nDet,:]
+    def plot_master(self, ax=None, **kwargs):
         ax = ax or plt.gca()
-        ax.plot(np.median(wave, axis=0), np.median(flux, axis=0), **kwargs)
+        ax.plot(np.median(self.wave, axis=0), np.median(self.flux, axis=0), **kwargs)
         return None
     
-    def trim(self, x1=0, x2=0):
+    def order(self, iOrder):
+        self_copy = self.copy()
+        select = lambda x: x[:,iOrder,:,:]
+        for attr in ['wave', 'flux', 'flux_err']:
+            setattr(self_copy, attr, select(self.__dict__[attr]))
+        self_copy.iOrder = iOrder
+        return self_copy
+    
+    def detector(self, iDet):
+        assert hasattr(self, 'iOrder'), "Select order first >> self.order(iOrder)"
+        self_copy = self.copy()
+        select = lambda x: x[:,iDet,:]
+        for attr in ['wave', 'flux', 'flux_err']:
+            setattr(self_copy, attr, select(self.__dict__[attr]))
+        self_copy.iDet = iDet
+        return self_copy
+    
+    def check_wavesol(self, ax=None):
+        print('Checking wavelength solution...')
+        ax = ax or plt.gca()
+        wavesol = np.median(self.wave, axis=0)
+        wavesol_std = np.std(self.wave, axis=0)
+        ax.plot(wavesol, wavesol_std, '--o', ms=0.5)
+        print('Wave Solution Error: Min {:.2e} / Mean {:.2e} / Max {:.2e} nm'.format(
+            np.nanmin(wavesol_std), np.nanmedian(wavesol_std), np.nanmax(wavesol_std)))
+        return None
+    
+    def trim(self, x1=0, x2=0, ax=None):
         
-        fun1 = lambda x: x.at[:,:,:,:x1].set(np.nan)
-        fun2 = lambda x: x.at[:,:,:,-x2:].set(np.nan)
+        fun1 = lambda x: x.at[:,:x1].set(np.nan)
+        fun2 = lambda x: x.at[:,-x2:].set(np.nan)
             
         for attr in ['wave', 'flux', 'flux_err']:
             setattr(self, attr, fun2(fun1(self.__dict__[attr])))
-
+        self.__check_ax(ax)
         return self
     
-    def normalise(self):
-        med = np.nanmedian(self.flux, axis=0, keepdims=True)
-        self.flux = self.flux / med
-        self.flux_err = self.flux_err / med
+    def normalise(self, ax=None):
+        med = np.nanmedian(self.flux, axis=1)
+        self.flux = (self.flux.T / med).T
+        self.flux_err = (self.flux_err.T / med).T
+        self.__check_ax(ax)
         return self
     
+    def __check_ax(self, ax):
+        if ax != None:
+            self.imshow(ax=ax)
+        return None    
+    
+    def __check_dims(self):
+        assert hasattr(self, 'iOrder'), "Select order first >> self.order(iOrder)"
+        assert hasattr(self, 'iDet'), "Select detector first >> self.detector(iDet)"
+        return None
     
     def PCA(self, N=1, nOrder=0, nDet=0, ax=None):
         '''PCA decomposition on reconstruction with the first N components removed
         Implemented in `numpy` for now. JAX `jnp.linalg.svd` is not working...'''
-        f = self.flux[:,nOrder, nDet,:]
-        self.nans = numpy.isnan(f[0,])
+        self.__check_dims()
+        self.nans = numpy.isnan(self.flux[0,])
         # sub_med = lambda x: numpy.subtract(x, np.nanmedian(x))
-        f_nonans = f[:,~self.nans]
+        f_nonans = self.flux[:,~self.nans]
         f_nonans = (f_nonans.T - numpy.nanmedian(f_nonans, axis=1)).T
         print(f_nonans.shape)
 
@@ -101,23 +140,22 @@ class CRIRES:
         W=numpy.diag(s1)
         f_rec = numpy.dot(u,numpy.dot(W,vh))
         
-        new_f = f.at[:,~self.nans].set(f_rec)
-        self.flux = self.flux.at[:,nOrder, nDet,:].set(new_f)
+        self.flux = self.flux.at[:,~self.nans].set(f_rec)
+        # self.flux = self.flux.at[:,nOrder, nDet,:].set(new_f)
         
-        if ax is not None: self.imshow(ax=ax, nOrder=nOrder, nDet=nDet)
+        if ax is not None: self.imshow(ax=ax)
         return self
     
-    def gaussian_filter(self, window=15., nOrder=0, nDet=0, ax=None):
+    def gaussian_filter(self, window=15., ax=None):
         from scipy import ndimage
-        
-        f = self.flux[:,nOrder, nDet,:]
-        f_nonans = f[:,~self.nans]
+        self.__check_dims()
+        f_nonans = self.flux[:,~self.nans]
         
         lowpass = ndimage.gaussian_filter(f_nonans, [0, window])
         
-        new_f = f.at[:,~self.nans].set(f_nonans-lowpass)
-        self.flux = self.flux.at[:,nOrder, nDet,:].set(new_f)
-        if ax is not None: self.imshow(ax=ax, nOrder=nOrder, nDet=nDet)
+        self.flux = self.flux.at[:,~self.nans].set(f_nonans-lowpass)
+        # self.flux = self.flux.at[:,nOrder, nDet,:].set(new_f)
+        if ax is not None: self.imshow(ax=ax)
         return self
         
 
@@ -127,17 +165,18 @@ if __name__ == '__main__':
     path = pathlib.Path("/home/dario/phd/pycrires/pycrires/product/obs_staring/")
     files = sorted(path.glob("cr2res_obs_staring_extracted_*.fits"))
     
-    nOrder, nDet = 1,1
+    iOrder, iDet = 1,1
     crires = CRIRES(files).read()
+    
+    data = crires.order(iOrder).detector(iDet) 
+    print(data.flux.shape) # (100, 2048)
 
     fig, ax = plt.subplots(5,1,figsize=(10,4))
-    crires.imshow(nOrder, nDet, ax=ax[0])
-    
-    crires.trim(20,20)
-    crires.imshow(nOrder, nDet, ax=ax[1])
-    crires.normalise()
-    crires.imshow(nOrder, nDet, ax=ax[2])
-    crires.PCA(4, 0, 0, ax=ax[3])
-    crires.gaussian_filter(15, 0, 0, ax=ax[4])
-    plt.show()
+    data.imshow(ax=ax[0])
 
+    data.trim(20,20, ax=ax[1])
+    data.normalise(ax=ax[2])
+    data.imshow(ax=ax[2])
+    data.PCA(4, ax=ax[3])
+    data.gaussian_filter(15, ax=ax[4])
+    plt.show()
