@@ -1,7 +1,7 @@
 import jax.numpy as np
 from astropy.io import fits
 import matplotlib.pyplot as plt
-
+from scipy.interpolate import interp1d
 
 class Template:
     
@@ -33,6 +33,28 @@ class Template:
         sort = np.argsort(self.wave)
         self.wave = self.wave[sort]
         self.flux = self.flux[sort]
+        return self
+    
+    def crop(self, wmin, wmax):
+        """ Crop the template to the given wavelength range.
+
+        Args:
+            wmin (float): Minimum wavelength. 
+            wmax (float): Maxmimum wavelength.
+        """
+        crop = (self.wave >= wmin) & (self.wave <= wmax)
+        self.wave = self.wave[crop]
+        self.flux = self.flux[crop]
+        return self
+    def shift(self, RV):
+        """ Shift the template by the given radial velocity.
+
+        Args:
+            RV (float): Radial velocity in km/s.
+        """
+        wave_s = self.wave * (1. - RV/299792.458)
+        # self.flux = interp1d(self.wave, self.flux, kind='linear', bounds_error=False)(wave_s)
+        self.wave = wave_s
         return self
     
 if __name__ == '__main__':

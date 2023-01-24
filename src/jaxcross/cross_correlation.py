@@ -8,6 +8,7 @@ from jax import vmap, devices, jit
 from functools import wraps
 import time
 import matplotlib.pyplot as plt
+import copy
 
 
 def timeit(func):
@@ -74,6 +75,9 @@ class CCF:
         ax.set(title=title)
 
         return obj
+    
+    def copy(self):
+        return copy.deepcopy(self)
 
     @timeit 
     def numpy_ccf(self, datax, datay):
@@ -81,6 +85,76 @@ class CCF:
         f = datay - numpy.mean(datay)
         self.shift_template(datax)
         return numpy.dot(f/ np.var(f, axis=0), self.g)
+    
+class KpV:
+    def __init__(self, ccf=None, planet=None, deltaRV=None,
+                 kp_radius=50., vrest_max=80., bkg=None):
+        if not ccf is None:
+            self.ccf = ccf.copy()
+            self.planet = copy.deepcopy(planet)
+            self.dRV = deltaRV or ccf.dRV
+
+            self.kpVec = self.planet.Kp + np.arange(-kp_radius, kp_radius, self.dRV)
+            self.vrestVec = np.arange(-vrest_max, vrest_max+self.dRV, self.dRV)
+            self.bkg = bkg or vrest_max*0.60
+
+            try:
+                self.planet.frame = self.ccf.frame
+                # print(self.planet.frame)
+            except:
+                print('Define data rest frame...')
+            # self.n_jobs = 6 # for the functions that allow parallelisation
+
+    def shift_vsys(self, iObs):
+        print(iObs)
+        outRV = self.vrestVec + self.rv_planet[iObs]
+        return interp1d(self.ccf.RV, self.ccf.map[iObs,])(outRV)
+    @property
+    def snr(self):
+        noise_region = np.abs(self.vrestVec)>self.bkg
+        noise = np.std(self.ccf_map[:,noise_region])
+        bkg = np.median(self.ccf_map[:,noise_region])
+        return((self.ccf_map - bkg) / noise)
+
+    @property
+    def noise(self):
+        '''
+        Return the standard deviation of the region away from the peak i.e.
+        KpV.vrestVec > KpV.bkg
+        '''
+        noise_region = np.abs(self.vrestVec)>self.bkg
+        return np.std(self.ccf_map[:,noise_region])
+    @property
+    def baseline(self):
+        '''
+        Return the median value away from the peak i.e.
+        KpV.vrestVec > KpV.bkg
+        '''
+        noise_region = np.abs(self.vrestVec)>self.bkg
+        return np.median(self.ccf_map[:,noise_region])
+
+    def run(self, ignore_eclipse=True, ax=None):
+        '''Generate a Kp-Vsys map
+        if snr = True, the returned values are SNR (background sub and normalised)
+        else = map values'''
+
+        ecl = False * np.ones_like(self.planet.RV)
+        if ignore_eclipse:
+            ecl = self.planet.mask_eclipse(return_mask=True)
+
+        ccf_map = np.zeros((len(self.kpVec), len(self.vrestVec)))
+
+        for ikp in range(len(self.kpVec)):
+            self.planet.Kp = self.kpVec[ikp]
+            pRV = self.planet.RV
+            for iObs in np.where(ecl==False)[0]:
+                outRV = self.vrestVec + pRV[iObs]
+                ccf_map[ikp,] += interp1d(self.ccf.RV, self.ccf.map[iObs,])(outRV)
+        self.ccf_map = ccf_map
+
+        # self.bestSNR = self.snr.max() # store info as variable
+        if ax != None: self.imshow(ax=ax)
+        return self
     
 if __name__ == '__main__':
     from jax import random, devices

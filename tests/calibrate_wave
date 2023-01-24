@@ -1,0 +1,54 @@
+import jax.numpy as np
+import matplotlib.pyplot as plt
+import numpy
+from jaxcross import CRIRES, Template, CCF
+
+class Wavesol:
+    
+    def __init__(self, wave, flux):
+        self.wave = wave
+        self.flux = flux
+        
+    def read_telluric(self, filename):
+        model = np.loadtxt(filename)
+        self.mwave = model[:,0]
+        self.mflux = model[:,1]
+        return self
+    
+import pathlib
+# path = pathlib.Path("/home/dario/phd/pycrires/pycrires/product/obs_staring/")
+path = pathlib.Path("/home/dario/phd/pycrires/pycrires/product/correct_wavelengths/")
+
+files = sorted(path.glob("cr2res_obs_staring_extracted_*.fits"))
+
+iOrder, iDet = 0,0
+crires = CRIRES(files).read()
+
+# fig, ax = plt.subplots(4)
+data = crires.order(iOrder).detector(iDet) 
+# data.imshow(ax=ax[0])
+# data.trim(20,20, ax=ax[1])
+# data.normalise(ax=ax[2])
+# data.plot_master(ax=ax[3])
+# plt.show()
+# data.trim(20,20)
+fig, ax = plt.subplots(1)
+data.check_wavesol(ax=ax)
+plt.show()
+
+# print(data.flux.shape) # (100, 2048)
+
+# filename = "/home/dario/phd/pycrires/pycrires/calib/run_skycalc/transm_spec.dat"
+# mx, my = numpy.loadtxt(filename, unpack=True)
+# template = Template(mx, my)
+
+# fig, ax = plt.subplots(1)
+# ax.plot(data.wave, np.nanmedian(data.flux, axis=0))
+# template.plot(ax=ax, c='red', ls='--')
+# ax.set_xlim(data.wave.min(), data.wave.max())
+# plt.show()
+
+# RVt = np.arange(-50, 50, 1.)
+# ccf = CCF(RVt, template)(data.wave, data.flux)
+# ccf.imshow()
+# plt.show()

@@ -1,7 +1,7 @@
-from .cross_correlation import CCF
+from .cross_correlation import CCF, KpV
 from .template import Template
 from .crires import CRIRES
-
+from .planet import Planet
 import sys
 
 if sys.version_info >= (3, 8):

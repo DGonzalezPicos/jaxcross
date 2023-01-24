@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import copy
 
 class CRIRES:
-    def __init__(self, files):
+    def __init__(self, files=None):
         self.files = files
         
     # def __str__(self):
@@ -18,7 +18,7 @@ class CRIRES:
         print(f'Reading files ({len(self.files)})...')
         wave_list, flux_list, flux_err_list = ([] for _ in range(3))
         for i,file in enumerate(self.files):
-            w,f,err = self.__load_fits(file)
+            w,f,err,header = self.__load_fits(file)
             wave_list.append(w), flux_list.append(f), flux_err_list.append(err)
         self.wave = np.array(wave_list)
         self.flux = np.array(flux_list)
@@ -49,7 +49,7 @@ class CRIRES:
                 flux[nDet,] = numpy.array([data.field(key) for key in columns.names if key.endswith("SPEC")])
                 flux_err[nDet,] = numpy.array([data.field(key) for key in columns.names if key.endswith("ERR")])
         swap = lambda x: numpy.swapaxes(x, 0, 1) # swap detector and order axes
-        return swap(wave), swap(flux), swap(flux_err)
+        return swap(wave), swap(flux), swap(flux_err), header
     
     def copy(self):
         return copy.deepcopy(self)
@@ -157,26 +157,45 @@ class CRIRES:
         # self.flux = self.flux.at[:,nOrder, nDet,:].set(new_f)
         if ax is not None: self.imshow(ax=ax)
         return self
+    
+    def save(self, outname):
+        numpy.save(outname, self.__dict__)
+        print('{:} saved...'.format(outname))
+        return None
+    def load(self, filename):
+        print('Loading Datacube from...', filename)
+        d = np.load(filename, allow_pickle=True).tolist()
+        for key in d.keys():
+            setattr(self, key, d[key])
+        return self
         
 
 if __name__ == '__main__':
-    
     import pathlib
     path = pathlib.Path("/home/dario/phd/pycrires/pycrires/product/obs_staring/")
     files = sorted(path.glob("cr2res_obs_staring_extracted_*.fits"))
     
-    iOrder, iDet = 1,1
-    crires = CRIRES(files).read()
+    with fits.open(files[0]) as hdul:
+        hdul.info()
+        header = hdul[0].header
+    hdr_keys = ['RA','DEC','MJD-OBS']
+    air_key = ['HIERARCH ESO TEL AIRM '+i for i in ['START','END']]
+    airmass = numpy.round(numpy.mean([header[key] for key in air_key]), 3)
     
-    data = crires.order(iOrder).detector(iDet) 
-    print(data.flux.shape) # (100, 2048)
+    my_header = {key:header[key] for key in hdr_keys}
+    my_header['AIRMASS'] = airmass
+    # iOrder, iDet = 1,1
+    # crires = CRIRES(files).read()
+    
+    # data = crires.order(iOrder).detector(iDet) 
+    # print(data.flux.shape) # (100, 2048)
 
-    fig, ax = plt.subplots(5,1,figsize=(10,4))
-    data.imshow(ax=ax[0])
+    # fig, ax = plt.subplots(5,1,figsize=(10,4))
+    # data.imshow(ax=ax[0])
 
-    data.trim(20,20, ax=ax[1])
-    data.normalise(ax=ax[2])
-    data.imshow(ax=ax[2])
-    data.PCA(4, ax=ax[3])
-    data.gaussian_filter(15, ax=ax[4])
-    plt.show()
+    # data.trim(20,20, ax=ax[1])
+    # data.normalise(ax=ax[2])
+    # data.imshow(ax=ax[2])
+    # data.PCA(4, ax=ax[3])
+    # data.gaussian_filter(15, ax=ax[4])
+    # plt.show()
