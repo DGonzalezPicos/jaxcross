@@ -4,7 +4,7 @@ import astropy.constants as const
 from astropy import units as u, coordinates as coord
 from astropy.coordinates import SkyCoord, EarthLocation
 from astropy.io import fits
-
+import copy
 class Planet:
     
     def __init__(self, name, header=None):
@@ -56,16 +56,16 @@ class Planet:
             # MJD.append(header['MJD-OBS'])
             date.append(header['DATE-OBS'])
         my_header = {key:header[key] for key in hdr_keys}
-        my_header['AIRMASS'] = numpy.round(airmass, 4)
+        my_header['airmass'] = numpy.round(airmass, 4)
         # my_header['MJD'] = MJD
-        my_header['DATE'] = date
+        my_header['date'] = date
         self.__set_header(my_header) # save header
         return self
     
     def __set_header(self, header):
         for k,v in header.items():
             setattr(self, k, v)
-        self.time = Time(self.DATE, format='isot', scale='tdb')
+        self.time = Time(self.date, format='isot', scale='tdb')
         
         if hasattr(self, 'T_0'): self.Tc = Time(self.T_0, format='jd',scale='tdb') 
         if hasattr(self, 'T_14'): self.T_14 /= 24. # from hours to days
@@ -88,11 +88,11 @@ class Planet:
         return self
     
     @property
-    def jd(self):
+    def JD(self):
         return self.time.jd
     
     @property
-    def mjd(self):
+    def MJD(self):
         return self.time.mjd
     
     def get_BERV(self):
@@ -100,7 +100,7 @@ class Planet:
         obsname = "paranal"
         if hasattr(self, 'observatory'):
             obsname = self.observatory
-        vcorr,_,_ = get_BC_vel(Time(self.jd, format='jd'), ra=self.RA, dec=self.DEC, obsname=obsname)
+        vcorr,_,_ = get_BC_vel(Time(self.JD, format='jd'), ra=self.RA, dec=self.DEC, obsname=obsname)
         self.BERV = vcorr / 1e3 # m/s to km/s 
         return self
         
@@ -108,7 +108,7 @@ class Planet:
     def BJD(self):
         '''convert MJD to BJD'''
         #Convert MJD to BJD to account for light travel time. Adopted from Astropy manual.
-        t = Time(self.mjd, format='mjd',scale='tdb',location=self.location) 
+        t = Time(self.MJD, format='mjd',scale='tdb',location=self.location) 
         ltt_bary = t.light_travel_time(self.sky_coord)
         return t.tdb + ltt_bary # = BJD  
     
@@ -135,6 +135,33 @@ class Planet:
             
         # print(rvel)
         return (rvel + RV_planet)
+    
+    def mask_eclipse(self, return_mask=False, debug=False):
+        '''given the duration of eclipse `t_14` in days
+        return the PLANET with the frames masked'''
+        
+        shape_in = self.RV.size
+        phase = self.phase
+        phase_14 = 0.5 * ((self.T_14) % self.P) / self.P
+        
+        mask = numpy.abs(phase - 0.50) < phase_14 # frames IN-eclipse
+            
+        if return_mask:
+            return mask
+
+        # Update planet header with the MASKED vectors
+        for key in ['time','airmass']:
+            setattr(self, key, getattr(self, key)[~mask])
+        if hasattr(self, 'BERV'):
+            self.BERV = self.BERV[~mask]
+            
+        if debug:
+            print('Original self.shape = {:}'.format(shape_in))
+            print('After ECLIPSE masking = {:}'.format(self.RV.size))
+        return self
+    
+    def copy(self):
+        return copy.deepcopy(self)
             
 if __name__ == '__main__':
     from astropy.io import fits

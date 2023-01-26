@@ -1,4 +1,4 @@
-# import numpy as np
+import numpy
 
 from scipy.interpolate import splev, splrep, interp1d
 c = 2.998e5 # km/s
@@ -25,12 +25,14 @@ def timeit(func):
     
 med_sub = lambda x: np.subtract(x, np.median(x))
 class CCF:
-    def __init__(self, RV, model):
+    def __init__(self, RV=None, model=None):
         self.RV = RV
         self.model = model
-        self.beta = 1 - (self.RV/c) 
+        if self.RV is not None:
+            self.beta = 1 - (self.RV/c) 
         # self.cs = splrep(self.model.wave, med_sub(self.model.flux))
-        self.inter = interp1d(self.model.wave, med_sub(self.model.flux), kind='linear')
+        if self.model is not None:
+            self.inter = interp1d(self.model.wave, med_sub(self.model.flux), kind='linear')
                 
                 
     def shift_template(self, datax):
@@ -86,7 +88,18 @@ class CCF:
         self.shift_template(datax)
         return numpy.dot(f/ np.var(f, axis=0), self.g)
     
-class KpV:
+    def save(self, outname):
+        numpy.save(outname, self.__dict__)
+        print('{:} saved...'.format(outname))
+        return None
+    def load(self, filename):
+        print('Loading Datacube from...', filename)
+        d = np.load(filename, allow_pickle=True).tolist()
+        for key in d.keys():
+            setattr(self, key, d[key])
+        return self
+    
+class KpV(CCF):
     def __init__(self, ccf=None, planet=None, deltaRV=None,
                  kp_radius=50., vrest_max=80., bkg=None):
         if not ccf is None:
@@ -132,7 +145,7 @@ class KpV:
         '''
         noise_region = np.abs(self.vrestVec)>self.bkg
         return np.median(self.ccf_map[:,noise_region])
-
+    @timeit
     def run(self, ignore_eclipse=True, ax=None):
         '''Generate a Kp-Vsys map
         if snr = True, the returned values are SNR (background sub and normalised)
@@ -142,19 +155,164 @@ class KpV:
         if ignore_eclipse:
             ecl = self.planet.mask_eclipse(return_mask=True)
 
-        ccf_map = np.zeros((len(self.kpVec), len(self.vrestVec)))
+        # self.ccf_map = np.zeros((len(self.kpVec), len(self.vrestVec)))
+        ccf_map = numpy.zeros((len(self.kpVec), len(self.vrestVec)))
 
+        # interpolation function to vectorise with `vmap`
+        fun = lambda x: np.interp(self.planet.RV[x]+self.vrestVec,
+                                  self.ccf.RV, self.ccf.map[x,])
+        vfun = vmap(fun)
+        jit_vfun = jit(vfun)
+        emask = np.where(ecl==False)[0]
         for ikp in range(len(self.kpVec)):
             self.planet.Kp = self.kpVec[ikp]
-            pRV = self.planet.RV
-            for iObs in np.where(ecl==False)[0]:
-                outRV = self.vrestVec + pRV[iObs]
-                ccf_map[ikp,] += interp1d(self.ccf.RV, self.ccf.map[iObs,])(outRV)
+            # old way of doing it (slow)
+            # for iObs in np.where(ecl==False)[0]:
+                # ccf_map[ikp,] += interp1d(self.ccf.RV, self.ccf.map[iObs,])(outRV)
+            ## New way (with JAX) ##
+            # ccf_map[ikp,] = np.sum(jit(vfun)(emask), axis=0) # WARNING: DOES NOT WORK WITH JIT
+            ccf_map[ikp,] = np.sum(vfun(emask), axis=0) # this works
+            # self.ccf_map = self.ccf_map.at[ikp,].set(np.sum(vfun(emask), axis=0)) # this is slower than line above
         self.ccf_map = ccf_map
+        
+            
 
-        # self.bestSNR = self.snr.max() # store info as variable
+        self.bestSNR = self.snr.max() # store info as variable
         if ax != None: self.imshow(ax=ax)
         return self
+    
+    def get_grid_map(self):
+        test_planet = self.planet.copy()
+        grid = []
+        for i,kp in enumerate(self.kpVec):
+            test_planet.Kp = kp
+            grid.append(test_planet.RV[:,np.newaxis] + self.vrestVec[np.newaxis,:])
+        return numpy.array(grid)
+    
+    def fancy_figure(self, figsize=(6,6), peak=None, vmin=None, vmax=None,
+                     outname=None, title=None, display=True, **kwargs):
+        '''Plot Kp-Vsys map with horizontal and vertical slices 
+        snr_max=True prints the SNR for the maximum value'''
+        import matplotlib.gridspec as gridspec
+        fig = plt.figure(figsize=figsize)
+        gs = gridspec.GridSpec(6,6)
+        gs.update(wspace=0.00, hspace=0.0)
+        ax1 = fig.add_subplot(gs[1:5,:5])
+        ax2 = fig.add_subplot(gs[:1,:5])
+        ax3 = fig.add_subplot(gs[1:5,5])
+        # ax2 = fig.add_subplot(gs[0,1])
+        plt.setp(ax2.get_xticklabels(), visible=False)
+        plt.setp(ax3.get_yticklabels(), visible=False)
+        ax3.xaxis.tick_top()
+        
+        eps = 0.1 * (self.snr.max()-self.snr.max())
+        vmin = vmin or self.snr.min() - eps
+        vmax = vmax or self.snr.max() + eps
+        
+        ax2.set_ylim(vmin, vmax)
+        ax3.set_xlim(vmin, vmax)
+            
+        lims = [self.vrestVec[0],self.vrestVec[-1],self.kpVec[0],self.kpVec[-1]]
+
+        obj = ax1.imshow(self.snr,origin='lower',extent=lims,aspect='auto', 
+                         cmap='inferno', vmin=vmin, vmax=vmax)
+    
+        # figure settings
+        ax1.set(ylabel='$K_p$ (km/s)', xlabel='$\Delta v$ (km/s)', **kwargs)
+        
+        # colorbar
+        cax = fig.add_axes([ax3.get_position().x1+0.01,ax3.get_position().y0,
+                            0.035,ax3.get_position().height])
+
+        fig.colorbar(obj, cax=cax)
+        
+        if peak is None:
+            peak = self.snr_max()
+       # get the values     
+        self.snr_at_peak(peak)
+    
+        row = self.kpVec[self.indh]
+        col = self.vrestVec[self.indv]
+        print('Horizontal slice at Kp = {:.1f} km/s'.format(row))
+        print('Vertical slice at Vrest = {:.1f} km/s'.format(col))
+        ax2.plot(self.vrestVec, self.snr[self.indh,:], 'gray')
+        ax3.plot(self.snr[:,self.indv], self.kpVec,'gray')
+        
+        
+    
+        line_args = {'ls':':', 'c':'white','alpha':0.35,'lw':'3.', 'dashes':(0.7, 1.)}
+        ax1.axhline(y=row, **line_args)
+        ax1.axvline(x=col, **line_args)
+        ax1.scatter(col, row, marker='*', c='red',label='SNR = {:.2f}'.format(self.peak_snr), s=6.)
+        ax1.legend(handlelength=0.75)
+
+    
+        if title != None:
+            fig.suptitle(title, x=0.45, y=0.915, fontsize=14)
+    
+        if outname != None:
+            fig.savefig(outname, dpi=200, bbox_inches='tight', facecolor='white')
+        if not display:
+            plt.close()
+        return self
+    
+    def snr_max(self, display=False):
+        # Locate the peak
+        self.bestSNR = self.snr.max()
+        ipeak = np.where(self.snr == self.bestSNR)
+        bestVr = float(self.vrestVec[ipeak[1]])
+        bestKp = float(self.kpVec[ipeak[0]])
+        
+        if display:
+            print('Peak position in Vrest = {:3.1f} km/s'.format(bestVr))
+            print('Peak position in Kp = {:6.1f} km/s'.format(bestKp))
+            print('Max SNR = {:3.1f}'.format(self.bestSNR))
+        return(bestVr, bestKp, self.bestSNR)
+    
+    def snr_at_peak(self, peak=None):
+        '''
+        FInd the position and the SNR value of a given peak. If `peak` is a float
+        it is considered the Kp value and the function searches for the peak around a range of DeltaV (< 5km/s)
+        If `peak` is None, then we search for the peak around the expected planet position with a range of
+        +- 10 km/s for Kp
+        +- 5 km/s for DeltaV
+
+        Parameters
+        ----------
+        peak : None, float, tuple, optional
+            Position of the peak. The default is None.
+
+        Returns
+        -------
+            self (with relevant values stored as self.peak_pos and self.peak_snr)
+
+        '''
+        if peak is None:
+            snr = self.snr
+            mask_kp = np.abs(self.kpVec - self.kpVec.mean()) < 10.
+            mask_dv = np.abs(self.vrestVec) < 5. # around 0.0 km/s
+            snr[~mask_kp, :] = snr.min()
+            snr[:, ~mask_dv] = snr.min()
+
+            # max_snr = self.snr[mask_kp, mask_dv].argmax()
+            indh,indv = np.where(snr == snr.max())
+            self.indh, self.indv = int(indh), int(indv)
+            self.peak_pos = (float(self.vrestVec[self.indv]), float(self.kpVec[self.indh]))
+
+        elif isinstance(peak, float):
+            self.indh = np.abs(self.kpVec - peak).argmin()
+            mask_dv = np.abs(self.vrestVec) < 5. # around 0.0 km/s
+            mask_indv = self.snr[self.indh, mask_dv].argmax()
+            self.indv = np.argwhere(self.vrestVec == self.vrestVec[mask_dv][mask_indv])
+            print(self.vrestVec[self.indv])
+
+        elif isinstance(peak, (tuple, list)):
+            self.indv = np.abs(self.vrestVec - peak[0]).argmin()
+            self.indh = np.abs(self.kpVec - peak[1]).argmin()
+
+        self.peak_snr = float(self.snr[self.indh,self.indv])
+        return self
+
     
 if __name__ == '__main__':
     from jax import random, devices

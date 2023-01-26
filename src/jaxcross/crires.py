@@ -18,7 +18,7 @@ class CRIRES:
         print(f'Reading files ({len(self.files)})...')
         wave_list, flux_list, flux_err_list = ([] for _ in range(3))
         for i,file in enumerate(self.files):
-            w,f,err,header = self.__load_fits(file)
+            w,f,err = self.__load_fits(file)
             wave_list.append(w), flux_list.append(f), flux_err_list.append(err)
         self.wave = np.array(wave_list)
         self.flux = np.array(flux_list)
@@ -49,7 +49,7 @@ class CRIRES:
                 flux[nDet,] = numpy.array([data.field(key) for key in columns.names if key.endswith("SPEC")])
                 flux_err[nDet,] = numpy.array([data.field(key) for key in columns.names if key.endswith("ERR")])
         swap = lambda x: numpy.swapaxes(x, 0, 1) # swap detector and order axes
-        return swap(wave), swap(flux), swap(flux_err), header
+        return swap(wave), swap(flux), swap(flux_err)#, header
     
     def copy(self):
         return copy.deepcopy(self)
@@ -167,6 +167,33 @@ class CRIRES:
         d = np.load(filename, allow_pickle=True).tolist()
         for key in d.keys():
             setattr(self, key, d[key])
+        return self
+    
+    def inject_signal(self, planet, template, RV=None, factor=1., ax=None):
+        temp = template.copy()
+        p = planet.copy()
+        p.frame = self.frame
+
+        if factor > 1.: 
+            temp = temp.copy().boost(factor)
+
+        # get 2D template shifted at given RV or at planet.RV if no RV vector is passed
+        if RV is None:
+            RVt = p.RV
+        else:
+            RVt = RV*np.ones_like(p.RV)
+
+        temp = temp.shift_2D(RVt, self.wave)
+
+        # inject only for out-of-eclipse frames
+        emask = p.mask_eclipse(return_mask=True)
+        data_masked = self.flux[~emask,:]
+        # data_err_masked = self.flux_err[~mask,:]
+        temp_masked = temp.gflux[~emask,:]
+        self.flux = self.flux.at[~emask,:].set(data_masked * temp_masked)
+        
+
+        if ax != None: self.imshow(ax=ax)
         return self
         
 

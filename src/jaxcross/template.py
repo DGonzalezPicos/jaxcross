@@ -2,6 +2,7 @@ import jax.numpy as np
 from astropy.io import fits
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
+import copy
 
 class Template:
     
@@ -55,6 +56,27 @@ class Template:
         wave_s = self.wave * (1. - RV/299792.458)
         # self.flux = interp1d(self.wave, self.flux, kind='linear', bounds_error=False)(wave_s)
         self.wave = wave_s
+        return self
+    def copy(self):
+        return copy.deepcopy(self)
+    
+    def boost(self, factor=10.):
+        # mean = np.nanmean(self.flux)
+        new_flux = self.flux - 1.
+        new_flux *= factor
+        self.flux = new_flux + 1.
+        return self
+    
+    def shift_2D(self, RV, wave):
+        """ Shift the template by the given radial velocity.
+
+        Args:
+            RV (float): Radial velocity in km/s.
+        """
+        beta = 1. - RV/299792.458
+        wave_s = np.outer(beta, wave)
+        self.gflux = interp1d(self.wave, self.flux, kind='linear', bounds_error=False,
+                              fill_value=0.0)(wave_s)
         return self
     
 if __name__ == '__main__':
