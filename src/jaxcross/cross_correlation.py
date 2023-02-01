@@ -18,7 +18,11 @@ def timeit(func):
         result = func(*args, **kwargs)
         end_time = time.perf_counter()
         total_time = end_time - start_time
-        print(f'Function {func.__name__} --- {total_time*1e3:.2f} ms')
+        units = "s"
+        if total_time < 0.1:
+            units = "ms"
+            total_time *= 1e3
+        print(f'Function {func.__name__} --- {total_time:.2f} {units}')
         return result
     return timeit_wrapper
 
@@ -32,14 +36,14 @@ class CCF:
             self.beta = 1 - (self.RV/c) 
         # self.cs = splrep(self.model.wave, med_sub(self.model.flux))
         if self.model is not None:
-            self.inter = interp1d(self.model.wave, med_sub(self.model.flux), kind='linear')
+            self.inter = interp1d(self.model.wave, med_sub(self.model.flux), 
+                                  kind='linear', fill_value=0.0)
                 
                 
     def shift_template(self, datax):
-        # self.g = splev(np.outer(datax,self.beta), self.cs)
         self.nans = np.isnan(datax)
         self.g = self.inter(np.outer(datax[~self.nans],self.beta))
-        print(self.g.shape)
+        # print(self.g.shape)
         return self
      
     
@@ -61,10 +65,10 @@ class CCF:
     
     def imshow(self, ax=None, fig=None, title='', **kwargs):
         # plot y-axis as phase (if available)
+        
+        y1, y2 = 0, self.map.shape[0]-1
         if hasattr(self, 'phase'):
             y1, y2 = np.min(self.phase), np.max(self.phase)
-        else:
-            y1, y2 = 0, self.map.shape[0]-1
 
         ext = [np.min(self.RV), np.max(self.RV), y1, y2]
         ax = ax or plt.gca()
@@ -145,6 +149,38 @@ class KpV(CCF):
         '''
         noise_region = np.abs(self.vrestVec)>self.bkg
         return np.median(self.ccf_map[:,noise_region])
+    
+    
+    def get_planet_grid(self):
+        test_planet = self.planet.copy()
+        grid = []
+        for ikp in range(len(self.kpVec)):
+            test_planet.Kp = self.kpVec[ikp]
+            grid.append(test_planet.RV)
+        return np.asarray(grid)[:,:,np.newaxis]+self.vrestVec # RV_grid[iKp, iObs, iRV]
+    
+    def interpolate_ccf(self, iKp, iObs):
+        return np.interp(self.RV_grid[iKp,iObs,:], self.ccf.RV, self.ccf.map[iObs,])
+
+    @timeit
+    def get_map(self):
+        self.RV_grid = self.get_planet_grid() # RV_grid[iKp, iObs, iRV]
+        
+        ecl = False * np.ones_like(self.planet.RV)
+        if hasattr(self.planet, 'eclipse_mask'):
+            ecl = self.planet.eclipse_mask
+            
+        # Define the function to be jit-compiled
+        jit_vfun = jit(vmap(self.interpolate_ccf, in_axes=(None,0), out_axes=0)) # for each Kp, interpolate the CCF
+        ikp = np.arange(self.RV_grid.shape[0], dtype=int)
+        # iObs = np.arange(self.RV_grid.shape[1], dtype=int)
+        iObs = np.where(ecl==False)[0] # only use the non-eclipsed observations
+        # Call function with jit-compiled vmap
+        self.ccf_map = np.sum(jit_vfun(ikp, iObs), axis=0)
+        return self
+        
+        
+        
     @timeit
     def run(self, ignore_eclipse=True, ax=None):
         '''Generate a Kp-Vsys map
@@ -181,15 +217,7 @@ class KpV(CCF):
         if ax != None: self.imshow(ax=ax)
         return self
     
-    def get_grid_map(self):
-        test_planet = self.planet.copy()
-        grid = []
-        for i,kp in enumerate(self.kpVec):
-            test_planet.Kp = kp
-            grid.append(test_planet.RV[:,np.newaxis] + self.vrestVec[np.newaxis,:])
-        return numpy.array(grid)
-    
-    def fancy_figure(self, figsize=(6,6), peak=None, vmin=None, vmax=None,
+    def plot(self, figsize=(6,6), peak=None, vmin=None, vmax=None,
                      outname=None, title=None, display=True, **kwargs):
         '''Plot Kp-Vsys map with horizontal and vertical slices 
         snr_max=True prints the SNR for the maximum value'''

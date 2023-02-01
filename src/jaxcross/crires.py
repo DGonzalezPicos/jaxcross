@@ -13,7 +13,12 @@ class CRIRES:
     # def __repr__(self):
     #     return f"CRIRES object with {len(self.files)} files."
     
-        
+    @property
+    def nPix(self):
+        return self.wave.shape[-1]
+    @property
+    def nObs(self):
+        return self.flux.shape[0]
     def read(self):
         print(f'Reading files ({len(self.files)})...')
         wave_list, flux_list, flux_err_list = ([] for _ in range(3))
@@ -70,6 +75,8 @@ class CRIRES:
         return None
     
     def order(self, iOrder):
+        N_orders = self.flux.shape[1]
+        assert iOrder < N_orders, f"Order {iOrder} does not exist. Max order is {N_orders-1}"
         self_copy = self.copy()
         select = lambda x: x[:,iOrder,:,:]
         for attr in ['wave', 'flux', 'flux_err']:
@@ -79,6 +86,8 @@ class CRIRES:
     
     def detector(self, iDet):
         assert hasattr(self, 'iOrder'), "Select order first >> self.order(iOrder)"
+        Ndet = self.flux.shape[1]
+        assert iDet < Ndet, f"Detector must be an integer between 0 and {Ndet-1}"
         self_copy = self.copy()
         select = lambda x: x[:,iDet,:]
         for attr in ['wave', 'flux', 'flux_err']:
@@ -96,6 +105,11 @@ class CRIRES:
             np.nanmin(wavesol_std), np.nanmedian(wavesol_std), np.nanmax(wavesol_std)))
         return None
     
+    def clip(self, sigma=5.):
+        nans = np.isnan(self.flux[0,])
+        mask = np.abs(self.flux[:,~nans] - np.nanmedian(self.flux, axis=0)) > sigma * np.nanstd(self.flux, axis=0)
+        
+        self.flux[mask] = np.nan
     def trim(self, x1=0, x2=0, ax=None):
         
         fun1 = lambda x: x.at[:,:x1].set(np.nan)
@@ -195,6 +209,7 @@ class CRIRES:
 
         if ax != None: self.imshow(ax=ax)
         return self
+    
         
 
 if __name__ == '__main__':
