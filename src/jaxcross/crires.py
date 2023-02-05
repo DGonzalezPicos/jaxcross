@@ -1,5 +1,5 @@
-import jax.numpy as np
-import numpy
+import jax.numpy as jnp
+import numpy as np
 from astropy.io import fits
 import matplotlib.pyplot as plt
 import copy
@@ -14,7 +14,7 @@ class CRIRES:
     #     return f"CRIRES object with {len(self.files)} files."
     
     @property
-    def nPix(self):
+    def jnpix(self):
         return self.wave.shape[-1]
     @property
     def nObs(self):
@@ -25,9 +25,9 @@ class CRIRES:
         for i,file in enumerate(self.files):
             w,f,err = self.__load_fits(file)
             wave_list.append(w), flux_list.append(f), flux_err_list.append(err)
-        self.wave = np.array(wave_list)
-        self.flux = np.array(flux_list)
-        self.flux_err = np.array(flux_err_list)
+        self.wave = jnp.array(wave_list)
+        self.flux = jnp.array(flux_list)
+        self.flux_err = jnp.array(flux_err_list)
             
         return self
     
@@ -46,14 +46,14 @@ class CRIRES:
         """
         with fits.open(fits_file) as hdul:
             # hdul.info()
-            wave, flux, flux_err = (numpy.zeros((3, 7, 2048)) for _ in range(3)) # (detector, order, pixel)
+            wave, flux, flux_err = (np.zeros((3, 7, 2048)) for _ in range(3)) # (detector, order, pixel)
             for nDet in range(3):
                 columns = hdul[nDet+1].columns
                 data = hdul[nDet+1].data
-                wave[nDet,] = numpy.array([data.field(key) for key in columns.names if key.endswith("WL")])
-                flux[nDet,] = numpy.array([data.field(key) for key in columns.names if key.endswith("SPEC")])
-                flux_err[nDet,] = numpy.array([data.field(key) for key in columns.names if key.endswith("ERR")])
-        swap = lambda x: numpy.swapaxes(x, 0, 1) # swap detector and order axes
+                wave[nDet,] = np.array([data.field(key) for key in columns.names if key.endswith("WL")])
+                flux[nDet,] = np.array([data.field(key) for key in columns.names if key.endswith("SPEC")])
+                flux_err[nDet,] = np.array([data.field(key) for key in columns.names if key.endswith("ERR")])
+        swap = lambda x: np.swapaxes(x, 0, 1) # swap detector and order axes
         return swap(wave), swap(flux), swap(flux_err)#, header
     
     def copy(self):
@@ -62,8 +62,10 @@ class CRIRES:
     def imshow(self, ax=None, fig=None, **kwargs):
         ax = ax or plt.gca()
         y1, y2 = 0, self.flux.shape[0]
-        ext = [np.nanmin(self.wave), np.nanmax(self.wave), y1, y2]
-        im = ax.imshow(self.flux,origin='lower',aspect='auto',
+        ext = [jnp.nanmin(self.wave), jnp.nanmax(self.wave), y1, y2]
+
+        flux = self.flux.at[:,self.nans].set(np.nan)
+        im = ax.imshow(flux,origin='lower',aspect='auto',
                         extent=ext, **kwargs)
         if not fig is None: fig.colorbar(im, ax=ax, pad=0.05)
         current_cmap = plt.cm.get_cmap()
@@ -71,14 +73,16 @@ class CRIRES:
         return im
     def plot_master(self, ax=None, **kwargs):
         ax = ax or plt.gca()
-        ax.plot(np.median(self.wave, axis=0), np.median(self.flux, axis=0), **kwargs)
+        ax.plot(jnp.median(self.wave, axis=0)[~self.nans], 
+                jnp.median(self.flux, axis=0)[~self.nans], **kwargs)
         return None
     
     def order(self, iOrder):
         N_orders = self.flux.shape[1]
         assert iOrder < N_orders, f"Order {iOrder} does not exist. Max order is {N_orders-1}"
         self_copy = self.copy()
-        select = lambda x: x[:,iOrder,:,:]
+        # select = lambda x: x[:,iOrder,:,:]
+        select = lambda x: x.take(iOrder, axis=1)
         for attr in ['wave', 'flux', 'flux_err']:
             setattr(self_copy, attr, select(self.__dict__[attr]))
         self_copy.iOrder = iOrder
@@ -89,7 +93,8 @@ class CRIRES:
         Ndet = self.flux.shape[1]
         assert iDet < Ndet, f"Detector must be an integer between 0 and {Ndet-1}"
         self_copy = self.copy()
-        select = lambda x: x[:,iDet,:]
+        # select = lambda x: x[:,iDet,:]
+        select = lambda x: x.take(iDet, axis=1)
         for attr in ['wave', 'flux', 'flux_err']:
             setattr(self_copy, attr, select(self.__dict__[attr]))
         self_copy.iDet = iDet
@@ -98,22 +103,22 @@ class CRIRES:
     def check_wavesol(self, ax=None):
         print('Checking wavelength solution...')
         ax = ax or plt.gca()
-        wavesol = np.median(self.wave, axis=0)
-        wavesol_std = np.std(self.wave, axis=0)
+        wavesol = jnp.median(self.wave, axis=0)
+        wavesol_std = jnp.std(self.wave, axis=0)
         ax.plot(wavesol, wavesol_std, '--o', ms=0.5)
         print('Wave Solution Error: Min {:.2e} / Mean {:.2e} / Max {:.2e} nm'.format(
-            np.nanmin(wavesol_std), np.nanmedian(wavesol_std), np.nanmax(wavesol_std)))
+            jnp.nanmin(wavesol_std), jnp.nanmedian(wavesol_std), jnp.nanmax(wavesol_std)))
         return None
     
     def clip(self, sigma=5.):
-        nans = np.isnan(self.flux[0,])
-        mask = np.abs(self.flux[:,~nans] - np.nanmedian(self.flux, axis=0)) > sigma * np.nanstd(self.flux, axis=0)
+        nans = jnp.isnan(self.flux[0,])
+        mask = jnp.abs(self.flux[:,~nans] - jnp.nanmedian(self.flux, axis=0)) > sigma * jnp.nanstd(self.flux, axis=0)
         
-        self.flux[mask] = np.nan
+        self.flux[mask] = jnp.nan
     def trim(self, x1=0, x2=0, ax=None):
         
-        fun1 = lambda x: x.at[:,:x1].set(np.nan)
-        fun2 = lambda x: x.at[:,-x2:].set(np.nan)
+        fun1 = lambda x: x.at[:,:x1].set(jnp.nan)
+        fun2 = lambda x: x.at[:,-x2:].set(jnp.nan)
             
         for attr in ['wave', 'flux', 'flux_err']:
             setattr(self, attr, fun2(fun1(self.__dict__[attr])))
@@ -121,7 +126,7 @@ class CRIRES:
         return self
     
     def normalise(self, ax=None):
-        med = np.nanmedian(self.flux, axis=1)
+        med = jnp.nanmedian(self.flux, axis=1)
         self.flux = (self.flux.T / med).T
         self.flux_err = (self.flux_err.T / med).T
         self.__check_ax(ax)
@@ -134,25 +139,26 @@ class CRIRES:
     
     def __check_dims(self):
         assert hasattr(self, 'iOrder'), "Select order first >> self.order(iOrder)"
-        assert hasattr(self, 'iDet'), "Select detector first >> self.detector(iDet)"
+        # assert hasattr(self, 'iDet'), "Select detector first >> self.detector(iDet)"
         return None
     
     def PCA(self, N=1, nOrder=0, nDet=0, ax=None):
         '''PCA decomposition on reconstruction with the first N components removed
-        Implemented in `numpy` for now. JAX `jnp.linalg.svd` is not working...'''
+        Implemented in `np` for now. JAX `jnp.linalg.svd` is not working...'''
         self.__check_dims()
-        self.nans = numpy.isnan(self.flux[0,])
-        # sub_med = lambda x: numpy.subtract(x, np.nanmedian(x))
+        # self.nans = np.isnan(self.flux[0,])
+        # sub_med = lambda x: np.subtract(x, jnp.nanmedian(x))
         f_nonans = self.flux[:,~self.nans]
-        f_nonans = (f_nonans.T - numpy.nanmedian(f_nonans, axis=1)).T
+        f_nonans = (f_nonans.T - np.nanmedian(f_nonans, axis=1)).T # subtract median of each frame
+        f_nonans -= np.nanmedian(f_nonans, axis=0) # subtract median of each pixel
         print(f_nonans.shape)
 
         # Compute full SVD
-        u, s, vh = numpy.linalg.svd(f_nonans, full_matrices=False, compute_uv=True)
-        s1 = numpy.copy(s)
+        u, s, vh = np.linalg.svd(f_nonans, full_matrices=False, compute_uv=True)
+        s1 = np.copy(s)
         s1[0:N] = 0.
-        W=numpy.diag(s1)
-        f_rec = numpy.dot(u,numpy.dot(W,vh))
+        W=np.diag(s1)
+        f_rec = np.dot(u,np.dot(W,vh))
         
         self.flux = self.flux.at[:,~self.nans].set(f_rec)
         # self.flux = self.flux.at[:,nOrder, nDet,:].set(new_f)
@@ -173,12 +179,12 @@ class CRIRES:
         return self
     
     def save(self, outname):
-        numpy.save(outname, self.__dict__)
+        np.save(outname, self.__dict__)
         print('{:} saved...'.format(outname))
         return None
     def load(self, filename):
         print('Loading Datacube from...', filename)
-        d = np.load(filename, allow_pickle=True).tolist()
+        d = jnp.load(filename, allow_pickle=True).tolist()
         for key in d.keys():
             setattr(self, key, d[key])
         return self
@@ -195,7 +201,7 @@ class CRIRES:
         if RV is None:
             RVt = p.RV
         else:
-            RVt = RV*np.ones_like(p.RV)
+            RVt = RV*jnp.ones_like(p.RV)
 
         temp = temp.shift_2D(RVt, self.wave)
 
@@ -210,6 +216,13 @@ class CRIRES:
         if ax != None: self.imshow(ax=ax)
         return self
     
+    @property
+    def nans(self):
+        '''Returns a boolean array with **True** for NaNs along the wavelength axis'''
+        wave = jnp.atleast_2d(self.wave) # View inputs as arrays with at least two dimensions.
+        return jnp.isnan(wave).any(axis=0)
+        
+    
         
 
 if __name__ == '__main__':
@@ -222,7 +235,7 @@ if __name__ == '__main__':
         header = hdul[0].header
     hdr_keys = ['RA','DEC','MJD-OBS']
     air_key = ['HIERARCH ESO TEL AIRM '+i for i in ['START','END']]
-    airmass = numpy.round(numpy.mean([header[key] for key in air_key]), 3)
+    airmass = np.round(np.mean([header[key] for key in air_key]), 3)
     
     my_header = {key:header[key] for key in hdr_keys}
     my_header['AIRMASS'] = airmass

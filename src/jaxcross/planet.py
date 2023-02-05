@@ -1,4 +1,4 @@
-import numpy
+import numpy as np
 from astropy.time import Time
 import astropy.constants as const
 from astropy import units as u, coordinates as coord
@@ -7,12 +7,14 @@ from astropy.io import fits
 import copy
 class Planet:
     
-    def __init__(self, name, header=None):
+    def __init__(self, name, file=None, header=None):
         self.name = name
         
         if name == 'MASCARA-1b':
             self.read('/home/dario/phd/mascara1/mascara1b.dat')
         
+        if file is not None:
+            self.read(file)
         if header is not None:
             self.__set_header(header)
             
@@ -43,26 +45,26 @@ class Planet:
         return self
     
     def read_header(self, files):
-        """Read RA, DEC, AIRMASS, DATE-OBS from FITS header."""
+        """Read RA, DEC, airmass, DATE-OBS from FITS header."""
         
-        hdr_keys = ['RA','DEC']
+        hdr_keys = ['ra','dec']
         air_key = ['HIERARCH ESO TEL AIRM '+i for i in ['START','END']]
         airmass, date = ([] for _ in range(2))
         for f in files:
             with fits.open(f) as hdul:
                 # hdul.info()
                 header = hdul[0].header
-            airmass.append(numpy.mean([header[key] for key in air_key]))
+            airmass.append(np.mean([header[key] for key in air_key]))
             # MJD.append(header['MJD-OBS'])
             date.append(header['DATE-OBS'])
         my_header = {key:header[key] for key in hdr_keys}
-        my_header['airmass'] = numpy.round(airmass, 4)
+        my_header['airmass'] = np.round(airmass, 4)
         # my_header['MJD'] = MJD
         my_header['date'] = date
-        self.__set_header(my_header) # save header
+        self.set_header(my_header) # save header
         return self
     
-    def __set_header(self, header):
+    def set_header(self, header):
         for k,v in header.items():
             setattr(self, k, v)
         self.time = Time(self.date, format='isot', scale='tdb')
@@ -71,11 +73,11 @@ class Planet:
         if hasattr(self, 'T_14'): self.T_14 /= 24. # from hours to days
 
         if hasattr(self, 'a'):
-            self.v_orb = (2*numpy.pi*self.a*u.AU / (self.P*u.d)).to(u.km/u.s)
-            self.Kp = (self.v_orb * numpy.sin(numpy.radians(self.i))).value
+            self.v_orb = (2*np.pi*self.a*u.AU / (self.P*u.d)).to(u.km/u.s)
+            self.Kp = (self.v_orb * np.sin(np.radians(self.i))).value
             
-        if hasattr(self, 'RA') and hasattr(self, 'DEC'): # units must be in DEGREES
-            self.sky_coord= SkyCoord(self.RA, self.DEC, unit=(u.deg, u.deg))
+        if hasattr(self, 'ra') and hasattr(self, 'dec'): # units must be in DEGREES
+            self.sky_coord= SkyCoord(self.ra, self.dec, unit=(u.deg, u.deg))
             
         self.frame = 'telluric' # default
         self.dphi = 0.0 # default (phase shift)
@@ -95,13 +97,13 @@ class Planet:
     def MJD(self):
         return self.time.mjd
     
-    def get_BERV(self):
+    def get_berv(self):
         from barycorrpy import get_BC_vel 
         obsname = "paranal"
         if hasattr(self, 'observatory'):
             obsname = self.observatory
-        vcorr,_,_ = get_BC_vel(Time(self.JD, format='jd'), ra=self.RA, dec=self.DEC, obsname=obsname)
-        self.BERV = vcorr / 1e3 # m/s to km/s 
+        vcorr,_,_ = get_BC_vel(Time(self.JD, format='jd'), ra=self.ra, dec=self.dec, obsname=obsname)
+        self.berv = vcorr / 1e3 # m/s to km/s 
         return self
         
     @property
@@ -118,20 +120,20 @@ class Planet:
     
     @property
     def RV(self):
-        if not hasattr(self, 'BERV'):
-            self.get_BERV()
+        if not hasattr(self, 'berv'):
+            self.get_berv()
         #Derive the instantaneous radial velocity at which the planet is expected to be.
-        RV_planet = numpy.sin(2*numpy.pi*self.phase)*self.Kp
+        RV_planet = np.sin(2*np.pi*self.phase)*self.Kp
         if self.frame == 'stellar':
             rvel = 0.0
         elif self.frame == 'telluric':
-            rvel = ((self.v_sys*u.km/u.s)-self.BERV*u.km/u.s).value
+            rvel = ((self.v_sys*u.km/u.s)-self.berv*u.km/u.s).value
             
         elif self.frame == 'barycentric':
             rvel = self.v_sys
             
         elif self.frame == 'planet':
-            return numpy.zeros_like(self.BERV)
+            return np.zeros_like(self.berv)
             
         # print(rvel)
         return (rvel + RV_planet)
@@ -142,9 +144,9 @@ class Planet:
         
         shape_in = self.RV.size
         phase = self.phase
-        phase_14 = 0.5 * ((self.T_14) % self.P) / self.P
+        self.phase_14 = 0.5 * ((self.T_14) % self.P) / self.P
         
-        mask = numpy.abs(phase - 0.50) < phase_14 # frames IN-eclipse
+        mask = np.abs(phase - 0.50) < self.phase_14 # frames IN-eclipse
             
         if return_mask:
             return mask
@@ -152,8 +154,8 @@ class Planet:
         # Update planet header with the MASKED vectors
         for key in ['time','airmass']:
             setattr(self, key, getattr(self, key)[~mask])
-        if hasattr(self, 'BERV'):
-            self.BERV = self.BERV[~mask]
+        if hasattr(self, 'berv'):
+            self.berv = self.berv[~mask]
             
         if debug:
             print('Original self.shape = {:}'.format(shape_in))
@@ -162,6 +164,15 @@ class Planet:
     
     def copy(self):
         return copy.deepcopy(self)
+    
+
+    
+    # def set_header(self, header):
+    #     for k,v in header.items():
+    #         setattr(self, k, v)
+    #     if hasattr(self, 'date'):
+    #         self.time = Time(self.date, format='isot', scale='tdb')
+    #     return self
             
 if __name__ == '__main__':
     from astropy.io import fits
@@ -173,20 +184,20 @@ if __name__ == '__main__':
     files = sorted(path.glob("cr2res_obs_staring_extracted_*.fits"))
     
     def get_header(files):
-        """Read RA, DEC, AIRMASS, DATE-OBS from FITS header."""
+        """Read RA, DEC, airmass, DATE-OBS from FITS header."""
         
-        hdr_keys = ['RA','DEC']
+        hdr_keys = ['ra','dec']
         air_key = ['HIERARCH ESO TEL AIRM '+i for i in ['START','END']]
         airmass, date = ([] for _ in range(2))
         for f in files:
             with fits.open(f) as hdul:
                 # hdul.info()
                 header = hdul[0].header
-            airmass.append(numpy.mean([header[key] for key in air_key]))
+            airmass.append(np.mean([header[key] for key in air_key]))
             # MJD.append(header['MJD-OBS'])
             date.append(header['DATE-OBS'])
         my_header = {key:header[key] for key in hdr_keys}
-        my_header['AIRMASS'] = numpy.round(airmass, 4)
+        my_header['airmass'] = np.round(airmass, 4)
         # my_header['MJD'] = MJD
         my_header['DATE'] = date
         return my_header

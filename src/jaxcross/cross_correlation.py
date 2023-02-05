@@ -1,6 +1,7 @@
 import numpy
 
 from scipy.interpolate import splev, splrep, interp1d
+# from .interpolate import InterpolatedUnivariateSpline ### problems with "jaxlib/gpu/solver_kernels.cc:45" like linalg.svd
 c = 2.998e5 # km/s
 
 import jax.numpy as np
@@ -29,38 +30,37 @@ def timeit(func):
     
 med_sub = lambda x: np.subtract(x, np.median(x))
 class CCF:
-    def __init__(self, RV=None, model=None):
+    def __init__(self, RV=None, model=None, interpolation="linear"):
         self.RV = RV
         self.model = model
         if self.RV is not None:
             self.beta = 1 - (self.RV/c) 
         # self.cs = splrep(self.model.wave, med_sub(self.model.flux))
+        self.interpolation = interpolation
         if self.model is not None:
-            self.inter = interp1d(self.model.wave, med_sub(self.model.flux), 
-                                  kind='linear', fill_value=0.0)
-                
-                
-    def shift_template(self, datax):
-        self.nans = np.isnan(datax)
-        self.g = self.inter(np.outer(datax[~self.nans],self.beta))
-        # print(self.g.shape)
-        return self
+            self.inter = interp1d(self.model.wave, med_sub(self.model.flux), bounds_error=False,
+                                  kind=self.interpolation, fill_value=0.0)
+            # self.inter = InterpolatedUnivariateSpline(self.model.wave, med_sub(self.model.flux), k=3)
+        self.set_norm = 'ones'
+        self.sigma2 = 1. # CCF data normalization (defaults: 1., other: np.var(data, axis=0))
      
     
     @timeit
     def xcorr(self, f):
     #   return np.dot(med_sub(f) / np.var(f, axis=0), self.g)
-        return np.dot(f, self.g)
+        if self.set_norm == 'var':
+            self.sigma2 = np.var(f, axis=0)
+        return np.dot(f /self.sigma2, self.g)
     
     
-    
-    def __call__(self, datax, datay, jit_enable=True):
-        self.shift_template(datax)
-        if jit_enable:
-            jit_ccf = jit(self.xcorr)
-            self.map = jit_ccf(datay[:,~self.nans])
-            return self
-        self.map = self.xcorr(datay[:,~self.nans])
+    def __call__(self, datax, datay):
+        # Ignore nans in data
+        self.nans = np.isnan(datax)
+        # Interpolate template to all RV shifts
+        self.g = self.inter(np.outer(datax[~self.nans],self.beta))
+        # Call function to calculate CCF-map
+        jit_ccf = jit(self.xcorr)
+        self.map = jit_ccf(datay[:,~self.nans])
         return self
     
     def imshow(self, ax=None, fig=None, title='', **kwargs):
