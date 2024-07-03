@@ -9,10 +9,16 @@ from astropy.stats import sigma_clip
 eso = Header(tel_unit=3) # CRIRES+ is mounted on VLT UT3 (Melipal)
 
 class CRIRES:
-    def __init__(self, files=None):
+    def __init__(self, files=None, target='target'):
+        '''CRIRES data object
+        
+        Parameters
+        ----------------
+            files = list of FITS files to CRIRES reduced data 
+            target = name of target (default: 'target')
+        '''
         self.files = files
-        
-        
+        self.target = target
         
         # plotting options for imshow()
         self.imshow_dict = {}
@@ -41,6 +47,10 @@ class CRIRES:
     @property
     def nObs(self):
         return self.flux.shape[0]
+    @property
+    def nFrames(self):
+        '''Alias for nObs'''
+        return self.nObs
     
     @property
     def nOrder(self):
@@ -48,6 +58,10 @@ class CRIRES:
             return 1
         else:
             return self.flux.shape[1]
+    @property
+    def nOrders(self):
+        '''Alias for nOrder'''
+        return self.nOrder
     @property
     def nDet(self):
         if hasattr(self, 'iDet'):
@@ -57,6 +71,58 @@ class CRIRES:
     @property
     def nPix(self):
         return self.wave.shape[-1]
+    
+    @property
+    def snr(self):
+        '''According to the CRIRES+ manual:
+        *the spectrum can be directly divided by the error-spectrum 
+        to obtain the signal-to-noise ratio*'''
+        snr = np.zeros_like(self.flux)
+        shape = self.flux.shape
+        
+        self.flux_err[self.flux_err == 0] = np.nanpercentile(self.flux_err[self.flux_err>0], 95) # avoid divide by zero
+        err_nans = np.isnan(self.flux_err)
+        flux_nans = np.isnan(self.flux)
+        
+        nans = np.logical_or(err_nans, flux_nans)
+        err = self.flux_err[~nans]
+    
+        f = self.flux[~nans]
+        snr[~nans] = np.abs(np.divide(f, err))
+        
+        return snr
+    
+    @property
+    def master(self):
+        '''Weighted time-average of all spectra'''
+        # snr2 = np.nanmean(self.self.flux_err, axis=3)**2 # weights per (frame, order, detector)
+        sigma2 = np.nanmean(np.power(self.flux_err, 2), axis=-1) # weights per (frame, order, detector)
+        sigma2[sigma2 == 0] = np.nanpercentile(sigma2[sigma2>0], 1) # avoid divide by zero
+
+        weights = sigma2 / np.sum(sigma2)
+        self.weights = np.expand_dims(weights, axis=-1)
+        
+        return np.sum(self.flux*self.weights, axis=0)
+    
+    @property
+    def master_err(self):
+        '''Error propagation for master spectrum'''
+        if not hasattr(self, 'master'): 
+            _ = self.master
+        # assert hasattr(self, 'weights'), 'Run `master` first'
+        return np.sqrt(np.sum(np.power(self.flux_err, 2)*self.weights**2, axis=0))
+    @property
+    def master_snr(self):
+        self.master_err[self.master_err == 0] = np.nanpercentile(self.master_err[self.master_err>0], 5) # avoid divide by zero
+        return self.master / self.master_err
+    
+    
+    
+    @property
+    def bad_pixels(self):
+        return np.isnan(self.flux)
+
+        
         
     
         
@@ -64,7 +130,7 @@ class CRIRES:
     def read(self):
         print(f'Reading files ({len(self.files)})...')
         wave_list, flux_list, flux_err_list = ([] for _ in range(3))
-        ext_header = {k:[] for k in eso.keys()} # Create empty dict to extract header info 
+        # ext_header = {k:[] for k in eso.keys()} # Create empty dict to extract header info 
 
         for i,file in enumerate(self.files):
             w,f,err = self.__load_fits(file)
@@ -117,6 +183,22 @@ class CRIRES:
         # TODO: implement header class for CRIRES in `eso_utils.py` with correct keys
         return swap(wave), swap(flux), swap(flux_err)#, header
     
+    def load_fits2D(self, fits_file):
+        swap = lambda x: np.swapaxes(x, 0, 1) # swap detector and order axes
+
+        with fits.open(fits_file) as hdul:
+            header = hdul[0].header
+            data = map(swap, (hdul[i].data for i in range(1, len(hdul))))
+            
+            keys = iter(['flux', 'flux_err', 'wave', 'wave_corr'])
+            for val in data:
+                key = next(keys)
+                print('Setting attribute: ', key, '...')
+                setattr(self, key, val)
+            # shape = (order, detector, slit_frac, pixel)
+            
+        return self
+    
     def copy(self):
         return copy.deepcopy(self)
     
@@ -148,16 +230,130 @@ class CRIRES:
             current_cmap = plt.cm.get_cmap()
             current_cmap.set_bad(color='white')
             return im
-    
-    def plot_master(self, ax=None, **kwargs):
+        
+    def plot(self, frame=0, ax=None, lw=0.9, **kwargs):
+        '''Plot a single spectrum given (order, det)'''
+        assert hasattr(self, 'iOrder'), 'Order not set'
+        assert hasattr(self, 'iDet'), 'Detector not set'
         ax = ax or plt.gca()
-        if hasattr(self, 'wavesol'):
-            wave = self.wavesol
-        else:
-            wave = np.nanmedian(self.wave, axis=0)
-        ax.plot(wave[~self.nans], 
-                np.nanmedian(self.flux, axis=0)[~self.nans], **kwargs)
+        ax_snr = ax.twinx()
+        
+        if isinstance(frame, str):
+            frame = np.arange(self.nFrames)
+        frames = [frame] if isinstance(frame, int) else frame
+        cmap = plt.cm.get_cmap('viridis', len(frames))
+        colors = iter(cmap(np.linspace(0, 1, len(frames))))
+        
+        for f in frames:
+            ax.plot(self.wave[f,:], self.flux[f,:], 
+                    label=f'Frame {f}', c=next(colors), **kwargs)
+            ax_snr.plot(self.wave[f,:], self.snr[f,:], alpha=0.0)
+        
+        ax_snr.set_ylabel('SNR')
+        ax.set(xlabel='Wavelength (nm)', ylabel='Flux [ADU]', title=f'Order {self.iOrder} -- Det {self.iDet}')
+        ax.legend()
         return None
+        
+        
+    def plot_all_range(self, frame=0, trim=10, outname=None):
+        assert trim > 0, 'trim must be > 0'
+        assert frame < self.nFrames, f'frame must be < {self.nFrames}'
+
+        fig, ax = plt.subplots(1, figsize=(9, 4))
+        cmap = plt.get_cmap('inferno', self.nDet*self.nOrders)
+        colors = iter(cmap(np.linspace(0, 1, self.nDet*self.nOrders)))
+
+        
+        for iOrder in range(self.nOrders):
+            for iDet in range(self.nDet):
+                ax.plot(self.wave[frame,iOrder,iDet,trim:-trim], self.flux[frame,iOrder,iDet, trim:-trim], c=next(colors), lw=0.5)
+
+        ax.set(ylabel='Counts', xlabel='Wavelength (nm)', title=f'CRIRES+ {self.target}\n frame = {frame}')
+        plt.show()
+        if outname is not None:
+            fig.savefig(outname, dpi=300, bbox_inches='tight')
+        return None
+            
+    def plot_all_orders(self, frame=0, det=0, trim=10, outname=None):
+        '''Plot all orders from a given detector and frame'''
+        assert trim > 0, 'trim must be > 0'
+        if isinstance(frame, int):
+            assert frame < self.nFrames, f'frame must be < {self.nFrames}'
+        assert det < self.nDet, f'detector must be < {self.nDet}'
+        
+        cmap = plt.get_cmap('inferno')
+        colors = cmap(np.linspace(0, 1, self.nOrder*2))
+        fig, ax = plt.subplots(self.nOrder, figsize=(12, 14))
+        for iOrder in range(self.nOrder):
+            data = self.order(iOrder).detector(det)
+            if isinstance(frame, int):
+                select = lambda x: x[frame, trim:-trim]
+                x, y, yerr, snr = map(select, [data.wave, data.flux, data.flux_err, data.snr])
+            elif frame in ['combined', 'master']:
+                select = lambda x: np.nanmedian(x[:, trim:-trim], axis=0)
+                x = select(data.wave)
+                y = data.master[trim:-trim]
+                yerr = data.master_err[trim:-trim]
+                snr = y / yerr
+                
+                
+            
+            ax[iOrder].plot(x,y, label='Order {}'.format(iOrder),color=colors[iOrder])
+            ax[iOrder].fill_between(x, y-yerr, y+yerr, alpha=0.4, color=colors[iOrder])
+            tlabel = 'Telluric Model' if iOrder == 0 else ''
+            self.plot_telluric(x1=x.min(), x2=x.max(), ax=ax[iOrder], scale=np.nanmean(y), 
+                               color='limegreen', alpha=0.8, ls='--', label=tlabel)
+                
+            ax_snr = ax[iOrder].twinx()
+            ax_snr.plot(x, snr, color=colors[iOrder], alpha=0.0)
+            ax_snr.set(ylabel='SNR')  
+               
+            ax[iOrder].legend()
+            x1, x2 = x.min(), x.max()
+            ax[iOrder].set_xlim(x1, x2)
+            if iOrder == 3:
+                ax[iOrder].set(ylabel='Flux [ADU]') 
+            
+        ax[0].set_title(f'CRIRES+ {self.target}\n Detector {det} -- Frame {frame}', fontsize=14)
+        ax[len(ax)-1].set_xlabel('Wavelength [nm]')
+        plt.show()
+        if outname is not None:
+            fig.savefig(outname, dpi=300, bbox_inches='tight')
+        return None
+    
+    def plot_telluric(self, x1=None, x2=None, ax=None, scale=1., **kwargs):
+        ax = ax or plt.gca()
+        file = "/home/dario/phd/jaxcross/data/transm_spec.dat" # my file
+
+        x1 = x1 if x1 is not None else self.wave.min()
+        x2 = x2 if x2 is not None else self.wave.max()
+        
+        twave, trans = np.loadtxt(file, unpack=True)
+        mask = (twave > x1) & (twave < x2)
+        ax.plot(twave[mask], trans[mask] * scale, **kwargs)
+        return None
+    
+    
+    def plot_master(self, ax=None, snr=False, **kwargs):
+        ax = ax or plt.gca()
+        
+        x = self.wavesol[~self.nans] if hasattr(self, 'wavesol') else np.nanmedian(self.wave, axis=0)[~self.nans]
+        y = self.master[~self.nans] if not snr else self.master_snr[~self.nans]
+        ax.plot(x, y, **kwargs)
+        return None
+    
+    def plot_spectra(self, ax=None, offset=0.0, snr=False, **kwargs):
+        ax = ax or plt.gca()
+        n = self.flux.shape[0]
+        cmap = plt.cm.get_cmap('viridis', n)
+        colors = iter([cmap(x) for x in range(n)])
+        if not hasattr(self, 'wavesol'):
+            self.set_wavesol()
+            
+        for i,f in enumerate(self.flux):
+            y = f[~self.nans] if not snr else self.snr[i, ~self.nans]
+            ax.plot(self.wavesol[~self.nans], offset + y, c=next(colors), **kwargs)
+        return self
     
     def sigma_clip(self, sigma=3, axis=0, replace_nans=True, ax=None):
         '''Sigma clip the flux array along the specified axis. Clipped values are set to NaN.
@@ -177,6 +373,39 @@ class CRIRES:
             self.imshow(ax=ax, label='Sigma clip {:.0f}σ'.format(sigma))
         return self
     
+    def align(self, ref_frame=0, cycles=3, ax=None):
+        '''Align the FRAMES to a reference FRAME using cross-correlation.'''
+        from align import Align
+        self_copy = self.copy()
+        al = Align(self_copy.wave, self_copy.flux, self_copy.flux_err).align_all(ref_frame, cycles)
+        self.wave = al.wave
+        self.flux = al.flux
+        self.flux_err = al.flux_err
+        return self
+    
+    def align_all_pairs(self, ref_frame=0, cycles=3, ax=None):
+        '''Align the FRAMES to a reference FRAME using cross-correlation.'''
+        from align import Align
+        for iOrder in range(self.nOrders):
+            for iDet in range(self.nDet):
+                pair = self.order(iOrder).detector(iDet)
+                pair_aligned = Align(pair.wave, pair.flux, pair.flux_err).align_all(ref_frame, cycles)
+                
+                self.update_pair(pair_aligned, iOrder=iOrder, iDet=iDet)
+            
+        return self
+    
+    def update_pair(self, self_pair, iOrder=None, iDet=None):
+        '''Update the current object with the values of the input 
+        single-order, single-detector object.'''
+        keys = ['wave', 'flux', 'flux_err']
+        # assert hasattr(self, 'iOrder') and hasattr(self, 'iDet')
+        # iOrder, iDet = self_pair.iOrder, self_pair.iDet
+        for k in keys:
+            getattr(self, k)[iOrder,iDet] = getattr(self, k)
+        return self
+        
+    
     def replace_nans(self, w=3., ax=None):
         from astropy.convolution import Gaussian2DKernel, interpolate_replace_nans
         # flux = np.array(self.flux, dtype=np.float64) # convert to numpy
@@ -190,7 +419,7 @@ class CRIRES:
         if ax is not None: self.imshow(ax=ax, label='Replace NaNs')
         return self
     
-    def order(self, iOrder, axis=0):
+    def order(self, iOrder, axis=1):
         N_orders = self.flux.shape[1]
         assert iOrder < N_orders, f"Order {iOrder} does not exist. Max order is {N_orders-1}"
         self_copy = self.copy()
@@ -227,7 +456,7 @@ class CRIRES:
         mask = np.abs(self.flux[:,~nans] - np.nanmedian(self.flux, axis=0)) > sigma * np.nanstd(self.flux, axis=0)
         
         self.flux[mask] = np.nan
-    def trim(self, x1=0, x2=0, ax=None):
+    def trim(self, x1=0, x2=None, ax=None):
         '''Trim edges of spectrum
         
         Parameters
@@ -240,6 +469,7 @@ class CRIRES:
         ------
             Trimmed CRIRES object (self)'''
         
+        x2 = x2 or x1 # by default x2=x1 
         self.wave[:,:x1] = np.nan
         self.wave[:,-x2:] = np.nan
         if hasattr(self, 'wavesol'):
@@ -363,6 +593,25 @@ class CRIRES:
             setattr(self, key, d[key])
         return self
     
+    def save_txt(self, outname):
+        assert len(self.wavesol.shape) == 3, "Wavelength solution is not 3D (order, det, pix)"
+        assert len(self.master.shape) == 3, "Flux is not 3D (order, det, pix)"
+        
+        wave = self.wavesol.flatten()
+        flux = self.master.flatten()
+        err = self.master_err.flatten()
+        orders = np.array([i * np.ones(self.nPix) for i in range(self.nOrders)], dtype=int).flatten()
+        orders = np.tile(orders, self.nDet)
+        dets = np.array([i * np.ones(self.nPix) for i in range(self.nDet)], dtype=int).flatten()
+        dets = np.tile(dets, self.nOrders)
+        print(dets.shape)
+        print(dets)
+        np.savetxt(outname, np.array([wave, flux, err, orders, dets]).T, 
+                   header='Wavelength (nm), Flux, Error, Order, Detector',
+                   fmt=['%.8f', '%.8f', '%.8f', '%i', '%i'])
+        print('{:} saved...'.format(outname))
+        return None
+    
     
     @property
     def nans(self):
@@ -390,7 +639,7 @@ if __name__ == '__main__':
     # iOrder, iDet = 1,1
     crires = CRIRES(files).read()
     
-    # data = crires.order(iOrder).detector(iDet) 
+    # data = self.order(iOrder).detector(iDet) 
     # print(data.flux.shape) # (100, 2048)
 
     # fig, ax = plt.subplots(5,1,figsize=(10,4))

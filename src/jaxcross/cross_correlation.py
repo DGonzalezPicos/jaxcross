@@ -4,7 +4,7 @@ from scipy.interpolate import splev, splrep, interp1d
 # from .interpolate import InterpolatedUnivariateSpline ### problems with "jaxlib/gpu/solver_kernels.cc:45" like linalg.svd
 c = 2.998e5 # km/s
 
-import jax.numpy as np
+import jax.numpy as jnp
 from jax import vmap, devices, jit
 from functools import wraps
 import time
@@ -28,11 +28,14 @@ def timeit(func):
     return timeit_wrapper
 
     
-med_sub = lambda x: np.subtract(x, np.median(x))
+med_sub = lambda x: jnp.subtract(x, jnp.median(x))
 class CCF:
     def __init__(self, RV=None, model=None, interpolation="linear"):
-        self.RV = RV
+        self.RV = jnp.array(RV)
         self.model = model
+        self.model.wave = jnp.array(self.model.wave)
+        self.model.flux = jnp.array(self.model.flux)
+        
         if self.RV is not None:
             self.beta = 1 - (self.RV/c) 
         # self.cs = splrep(self.model.wave, med_sub(self.model.flux))
@@ -42,22 +45,22 @@ class CCF:
                                   kind=self.interpolation, fill_value=0.0)
             # self.inter = InterpolatedUnivariateSpline(self.model.wave, med_sub(self.model.flux), k=3)
         self.set_norm = 'ones'
-        self.sigma2 = 1. # CCF data normalization (defaults: 1., other: np.var(data, axis=0))
+        self.sigma2 = 1. # CCF data normalization (defaults: 1., other: jnp.var(data, axis=0))
      
     
     @timeit
     def xcorr(self, f):
-    #   return np.dot(med_sub(f) / np.var(f, axis=0), self.g)
+    #   return jnp.dot(med_sub(f) / jnp.var(f, axis=0), self.g)
         if self.set_norm == 'var':
-            self.sigma2 = np.var(f, axis=0)
-        return np.dot(f /self.sigma2, self.g)
+            self.sigma2 = jnp.var(f, axis=0)
+        return jnp.dot(med_sub(f) /self.sigma2, self.g)
     
     
     def __call__(self, datax, datay):
         # Ignore nans in data
-        self.nans = np.isnan(datax)
+        self.nans = jnp.isnan(datax)
         # Interpolate template to all RV shifts
-        self.g = self.inter(np.outer(datax[~self.nans],self.beta))
+        self.g = self.inter(jnp.outer(datax[~self.nans],self.beta))
         # Call function to calculate CCF-map
         jit_ccf = jit(self.xcorr)
         self.map = jit_ccf(datay[:,~self.nans])
@@ -68,9 +71,9 @@ class CCF:
         
         y1, y2 = 0, self.map.shape[0]-1
         if hasattr(self, 'phase'):
-            y1, y2 = np.min(self.phase), np.max(self.phase)
+            y1, y2 = jnp.min(self.phase), jnp.max(self.phase)
 
-        ext = [np.min(self.RV), np.max(self.RV), y1, y2]
+        ext = [jnp.min(self.RV), jnp.max(self.RV), y1, y2]
         ax = ax or plt.gca()
         obj = ax.imshow(self.map,origin='lower',aspect='auto',
                         extent=ext, **kwargs)
@@ -90,7 +93,7 @@ class CCF:
         import numpy
         f = datay - numpy.mean(datay)
         self.shift_template(datax)
-        return numpy.dot(f/ np.var(f, axis=0), self.g)
+        return numpy.dot(f/ jnp.var(f, axis=0), self.g)
     
     def save(self, outname):
         numpy.save(outname, self.__dict__)
@@ -98,7 +101,7 @@ class CCF:
         return None
     def load(self, filename):
         print('Loading Datacube from...', filename)
-        d = np.load(filename, allow_pickle=True).tolist()
+        d = jnp.load(filename, allow_pickle=True).tolist()
         for key in d.keys():
             setattr(self, key, d[key])
         return self
@@ -111,8 +114,8 @@ class KpV(CCF):
             self.planet = copy.deepcopy(planet)
             self.dRV = deltaRV or ccf.dRV
 
-            self.kpVec = self.planet.Kp + np.arange(-kp_radius, kp_radius, self.dRV)
-            self.vrestVec = np.arange(-vrest_max, vrest_max+self.dRV, self.dRV)
+            self.kpVec = self.planet.Kp + jnp.arange(-kp_radius, kp_radius, self.dRV)
+            self.vrestVec = jnp.arange(-vrest_max, vrest_max+self.dRV, self.dRV)
             self.bkg = bkg or vrest_max*0.60
 
             try:
@@ -128,9 +131,9 @@ class KpV(CCF):
         return interp1d(self.ccf.RV, self.ccf.map[iObs,])(outRV)
     @property
     def snr(self):
-        noise_region = np.abs(self.vrestVec)>self.bkg
-        noise = np.std(self.ccf_map[:,noise_region])
-        bkg = np.median(self.ccf_map[:,noise_region])
+        noise_region = jnp.abs(self.vrestVec)>self.bkg
+        noise = jnp.std(self.ccf_map[:,noise_region])
+        bkg = jnp.median(self.ccf_map[:,noise_region])
         return((self.ccf_map - bkg) / noise)
 
     @property
@@ -139,16 +142,16 @@ class KpV(CCF):
         Return the standard deviation of the region away from the peak i.e.
         KpV.vrestVec > KpV.bkg
         '''
-        noise_region = np.abs(self.vrestVec)>self.bkg
-        return np.std(self.ccf_map[:,noise_region])
+        noise_region = jnp.abs(self.vrestVec)>self.bkg
+        return jnp.std(self.ccf_map[:,noise_region])
     @property
     def baseline(self):
         '''
         Return the median value away from the peak i.e.
         KpV.vrestVec > KpV.bkg
         '''
-        noise_region = np.abs(self.vrestVec)>self.bkg
-        return np.median(self.ccf_map[:,noise_region])
+        noise_region = jnp.abs(self.vrestVec)>self.bkg
+        return jnp.median(self.ccf_map[:,noise_region])
     
     
     def get_planet_grid(self):
@@ -157,26 +160,26 @@ class KpV(CCF):
         for ikp in range(len(self.kpVec)):
             test_planet.Kp = self.kpVec[ikp]
             grid.append(test_planet.RV)
-        return np.asarray(grid)[:,:,np.newaxis]+self.vrestVec # RV_grid[iKp, iObs, iRV]
+        return jnp.asarray(grid)[:,:,jnp.newaxis]+self.vrestVec # RV_grid[iKp, iObs, iRV]
     
     def interpolate_ccf(self, iKp, iObs):
-        return np.interp(self.RV_grid[iKp,iObs,:], self.ccf.RV, self.ccf.map[iObs,])
+        return jnp.interp(self.RV_grid[iKp,iObs,:], self.ccf.RV, self.ccf.map[iObs,])
 
     @timeit
     def get_map(self):
         self.RV_grid = self.get_planet_grid() # RV_grid[iKp, iObs, iRV]
         
-        ecl = False * np.ones_like(self.planet.RV)
+        ecl = False * jnp.ones_like(self.planet.RV)
         if hasattr(self.planet, 'eclipse_mask'):
             ecl = self.planet.eclipse_mask
             
         # Define the function to be jit-compiled
         jit_vfun = jit(vmap(self.interpolate_ccf, in_axes=(None,0), out_axes=0)) # for each Kp, interpolate the CCF
-        ikp = np.arange(self.RV_grid.shape[0], dtype=int)
-        # iObs = np.arange(self.RV_grid.shape[1], dtype=int)
-        iObs = np.where(ecl==False)[0] # only use the non-eclipsed observations
+        ikp = jnp.arange(self.RV_grid.shape[0], dtype=int)
+        # iObs = jnp.arange(self.RV_grid.shape[1], dtype=int)
+        iObs = jnp.where(ecl==False)[0] # only use the non-eclipsed observations
         # Call function with jit-compiled vmap
-        self.ccf_map = np.sum(jit_vfun(ikp, iObs), axis=0)
+        self.ccf_map = jnp.sum(jit_vfun(ikp, iObs), axis=0)
         return self
         
         
@@ -187,28 +190,28 @@ class KpV(CCF):
         if snr = True, the returned values are SNR (background sub and normalised)
         else = map values'''
 
-        ecl = False * np.ones_like(self.planet.RV)
+        ecl = False * jnp.ones_like(self.planet.RV)
         if ignore_eclipse:
             ecl = self.planet.mask_eclipse(return_mask=True)
 
-        # self.ccf_map = np.zeros((len(self.kpVec), len(self.vrestVec)))
+        # self.ccf_map = jnp.zeros((len(self.kpVec), len(self.vrestVec)))
         ccf_map = numpy.zeros((len(self.kpVec), len(self.vrestVec)))
 
         # interpolation function to vectorise with `vmap`
-        fun = lambda x: np.interp(self.planet.RV[x]+self.vrestVec,
+        fun = lambda x: jnp.interp(self.planet.RV[x]+self.vrestVec,
                                   self.ccf.RV, self.ccf.map[x,])
         vfun = vmap(fun)
         jit_vfun = jit(vfun)
-        emask = np.where(ecl==False)[0]
+        emask = jnp.where(ecl==False)[0]
         for ikp in range(len(self.kpVec)):
             self.planet.Kp = self.kpVec[ikp]
             # old way of doing it (slow)
-            # for iObs in np.where(ecl==False)[0]:
+            # for iObs in jnp.where(ecl==False)[0]:
                 # ccf_map[ikp,] += interp1d(self.ccf.RV, self.ccf.map[iObs,])(outRV)
             ## New way (with JAX) ##
-            # ccf_map[ikp,] = np.sum(jit(vfun)(emask), axis=0) # WARNING: DOES NOT WORK WITH JIT
-            ccf_map[ikp,] = np.sum(vfun(emask), axis=0) # this works
-            # self.ccf_map = self.ccf_map.at[ikp,].set(np.sum(vfun(emask), axis=0)) # this is slower than line above
+            # ccf_map[ikp,] = jnp.sum(jit(vfun)(emask), axis=0) # WARNING: DOES NOT WORK WITH JIT
+            ccf_map[ikp,] = jnp.sum(vfun(emask), axis=0) # this works
+            # self.ccf_map = self.ccf_map.at[ikp,].set(jnp.sum(vfun(emask), axis=0)) # this is slower than line above
         self.ccf_map = ccf_map
         
             
@@ -287,7 +290,7 @@ class KpV(CCF):
     def snr_max(self, display=False):
         # Locate the peak
         self.bestSNR = self.snr.max()
-        ipeak = np.where(self.snr == self.bestSNR)
+        ipeak = jnp.where(self.snr == self.bestSNR)
         bestVr = float(self.vrestVec[ipeak[1]])
         bestKp = float(self.kpVec[ipeak[0]])
         
@@ -317,26 +320,26 @@ class KpV(CCF):
         '''
         if peak is None:
             snr = self.snr
-            mask_kp = np.abs(self.kpVec - self.kpVec.mean()) < 10.
-            mask_dv = np.abs(self.vrestVec) < 5. # around 0.0 km/s
+            mask_kp = jnp.abs(self.kpVec - self.kpVec.mean()) < 10.
+            mask_dv = jnp.abs(self.vrestVec) < 5. # around 0.0 km/s
             snr[~mask_kp, :] = snr.min()
             snr[:, ~mask_dv] = snr.min()
 
             # max_snr = self.snr[mask_kp, mask_dv].argmax()
-            indh,indv = np.where(snr == snr.max())
+            indh,indv = jnp.where(snr == snr.max())
             self.indh, self.indv = int(indh), int(indv)
             self.peak_pos = (float(self.vrestVec[self.indv]), float(self.kpVec[self.indh]))
 
         elif isinstance(peak, float):
-            self.indh = np.abs(self.kpVec - peak).argmin()
-            mask_dv = np.abs(self.vrestVec) < 5. # around 0.0 km/s
+            self.indh = jnp.abs(self.kpVec - peak).argmin()
+            mask_dv = jnp.abs(self.vrestVec) < 5. # around 0.0 km/s
             mask_indv = self.snr[self.indh, mask_dv].argmax()
-            self.indv = np.argwhere(self.vrestVec == self.vrestVec[mask_dv][mask_indv])
+            self.indv = jnp.argwhere(self.vrestVec == self.vrestVec[mask_dv][mask_indv])
             print(self.vrestVec[self.indv])
 
         elif isinstance(peak, (tuple, list)):
-            self.indv = np.abs(self.vrestVec - peak[0]).argmin()
-            self.indh = np.abs(self.kpVec - peak[1]).argmin()
+            self.indv = jnp.abs(self.vrestVec - peak[0]).argmin()
+            self.indh = jnp.abs(self.kpVec - peak[1]).argmin()
 
         self.peak_snr = float(self.snr[self.indh,self.indv])
         return self
@@ -353,17 +356,17 @@ if __name__ == '__main__':
     jax.config.update('jax_platform_name', 'cpu') # USE CPU --> not working now
     key = random.PRNGKey(0)
     size = 4000
-    mx = np.linspace(0, size*0.1, size)
-    my = np.sin(2*mx+0.1)
-    x = mx + 0.1*np.min(np.diff(mx))
+    mx = jnp.linspace(0, size*0.1, size)
+    my = jnp.sin(2*mx+0.1)
+    x = mx + 0.1*jnp.min(jnp.diff(mx))
     
     
-    y = np.tile(my, (200,1))
+    y = jnp.tile(my, (200,1))
     noise = random.normal(key, (y.shape))
     y += 0.1 * noise
     print('Data size = ', y.shape)
 
-    RV = np.arange(-3000., 3002., 20.)
+    RV = jnp.arange(-3000., 3002., 20.)
     print('Template size = ' , RV.shape, my.shape)
     ccf = CCF(RV, Template(mx,my))
     ccf(x,y).imshow()

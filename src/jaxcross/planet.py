@@ -5,6 +5,7 @@ from astropy import units as u, coordinates as coord
 from astropy.coordinates import SkyCoord, EarthLocation
 from astropy.io import fits
 import copy
+c = const.c.to('km/s').value
 class Planet:
     
     def __init__(self, name, file=None, header=None):
@@ -17,6 +18,15 @@ class Planet:
             self.read(file)
         if header is not None:
             self.__set_header(header)
+            
+        self._frame = 'telluric' # default
+        
+        self.observatory = 'paranal' # default (observatory)
+        # astropy location object (EarthLocation.get_site_names() for full list)
+        loc_warning = "Observatory not found in EarthLocation.get_site_names()."
+        assert self.observatory in EarthLocation.get_site_names(), loc_warning
+        self.location = EarthLocation.of_site(self.observatory)
+
             
         
     def __str__(self):
@@ -64,13 +74,14 @@ class Planet:
         self.set_header(my_header) # save header
         return self
     
-    def set_header(self, header):
+    def set_header(self, header={}):
         for k,v in header.items():
             setattr(self, k, v)
         self.time = Time(self.date, format='isot', scale='tdb')
         
         if hasattr(self, 'T_0'): self.Tc = Time(self.T_0, format='jd',scale='tdb') 
         if hasattr(self, 'T_14'): self.T_14 /= 24. # from hours to days
+        if hasattr(self, 'T_12'): self.T_12 /= (60*24.) # from minutes to days
 
         if hasattr(self, 'a'):
             self.v_orb = (2*np.pi*self.a*u.AU / (self.P*u.d)).to(u.km/u.s)
@@ -79,15 +90,18 @@ class Planet:
         if hasattr(self, 'ra') and hasattr(self, 'dec'): # units must be in DEGREES
             self.sky_coord= SkyCoord(self.ra, self.dec, unit=(u.deg, u.deg))
             
-        self.frame = 'telluric' # default
         self.dphi = 0.0 # default (phase shift)
-        self.observatory = 'paranal' # default (observatory)
-        
-        # astropy location object (EarthLocation.get_site_names() for full list)
-        loc_warning = "Observatory not found in EarthLocation.get_site_names()."
-        assert self.observatory in EarthLocation.get_site_names(), loc_warning
-        self.location = EarthLocation.of_site(self.observatory)
+
         return self
+    
+    @property
+    def frame(self): 
+        return self._frame
+    @frame.setter
+    def frame(self, frame):
+        assert frame in ['barycentric', 'stellar','telluric','planet'], "Frame not recognized."
+        self._frame = frame
+        
     
     @property
     def JD(self):
@@ -130,14 +144,37 @@ class Planet:
             rvel = ((self.v_sys*u.km/u.s)-self.berv*u.km/u.s).value
             
         elif self.frame == 'barycentric':
-            rvel = self.v_sys
-            
+            rvel = self.v_sys # When `v_sys` is an array --> v_sys(t) = v_sys + RV_star(t)
+            # WARNING: the sign of v_sys here is (+) for ESPRESSO since it already has the correct sign
+            # for LHS3844: RV_sys = -10.54 km/s (from the header)
         elif self.frame == 'planet':
             return np.zeros_like(self.berv)
             
         # print(rvel)
         return (rvel + RV_planet)
     
+    @property
+    def cphase(self):
+        cont_phase = np.copy(self.phase)
+        cont_phase[cont_phase>0.50] -= 1.0 # continuous phase
+        return cont_phase
+    @property
+    def transit_mask(self):
+        assert hasattr(self, 'T_14'), "T_14 not defined."
+        self.phase_14 = 0.50 * self.T_14 / self.P # phase duration of transit
+        self.phase_12 = self.T_12 / self.P # phase duration of ingress/egress
+        ## Include exposures that are partially in-transit ## 
+        # Take the mean of the array of exposure times (should be constant)
+        # the factor "2" is optimistic (account for entrance and exit uncertainty)
+        dphase = np.mean(self.exptime) / (3600. * 24. * self.P) # uncertainty in phase
+        return np.abs(self.cphase) < (self.phase_14+dphase) # frames IN-eclipse
+    @property
+    def in_transit(self):
+        return self.transit_mask.sum()
+    @property
+    def out_transit(self):
+        return np.sum(~self.transit_mask)
+        
     def mask_eclipse(self, return_mask=False, debug=False):
         '''given the duration of eclipse `t_14` in days
         return the PLANET with the frames masked'''
@@ -164,6 +201,16 @@ class Planet:
     
     def copy(self):
         return copy.deepcopy(self)
+    
+    def trail(self, ax, wave0=None, frame=None, **kwargs):
+        pl_copy = self.copy()
+        pl_copy.frame = frame or self.frame
+        if wave0 is not None:
+            x = wave0 * (1 + pl_copy.RV[self.transit_mask] / c)
+        else:
+            x = pl_copy.RV[self.transit_mask]
+            
+        [ax.plot(x+i, pl_copy.cphase[self.transit_mask], **kwargs) for i in (-1,1)]
     
 
     

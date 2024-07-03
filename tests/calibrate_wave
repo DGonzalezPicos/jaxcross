@@ -1,19 +1,8 @@
 import jax.numpy as np
+from jax import vmap, jit
 import matplotlib.pyplot as plt
 import numpy
 from jaxcross import CRIRES, Template, CCF
-
-class Wavesol:
-    
-    def __init__(self, wave, flux):
-        self.wave = wave
-        self.flux = flux
-        
-    def read_telluric(self, filename):
-        model = np.loadtxt(filename)
-        self.mwave = model[:,0]
-        self.mflux = model[:,1]
-        return self
     
 import pathlib
 # path = pathlib.Path("/home/dario/phd/pycrires/pycrires/product/obs_staring/")
@@ -24,17 +13,18 @@ files = sorted(path.glob("cr2res_obs_staring_extracted_*.fits"))
 iOrder, iDet = 0,0
 crires = CRIRES(files).read()
 
-# fig, ax = plt.subplots(4)
+fig, ax = plt.subplots(4)
 data = crires.order(iOrder).detector(iDet) 
-# data.imshow(ax=ax[0])
-# data.trim(20,20, ax=ax[1])
-# data.normalise(ax=ax[2])
-# data.plot_master(ax=ax[3])
-# plt.show()
-# data.trim(20,20)
-fig, ax = plt.subplots(1)
-data.check_wavesol(ax=ax)
+data.imshow(ax=ax[0])
+data.trim(20,20, ax=ax[1])
+data.normalise(ax=ax[2])
+data.plot_master(ax=ax[3])
+ax[3].set_xlim(np.nanmin(data.wave), np.nanmax(data.wave))
 plt.show()
+# data.trim(20,20)
+# fig, ax = plt.subplots(1)
+# data.check_wavesol(ax=ax)
+# plt.show()
 
 # print(data.flux.shape) # (100, 2048)
 
@@ -47,8 +37,55 @@ plt.show()
 # template.plot(ax=ax, c='red', ls='--')
 # ax.set_xlim(data.wave.min(), data.wave.max())
 # plt.show()
-
-# RVt = np.arange(-50, 50, 1.)
-# ccf = CCF(RVt, template)(data.wave, data.flux)
+xpixels = np.arange(0, data.nPix)
+# template = Template(xpixels, data.flux[0,:])
+# RVt = np.arange(-10, 10, 0.5)
+# ccf = CCF(RVt, template)(xpixels[10:-10], data.flux[:, 10:-10])
 # ccf.imshow()
 # plt.show()
+
+# class Align:
+#     def __init__(self, xpixels, template):
+#         self.xpixels = xpixels
+#         self.template = template
+#         self.RVt = np.arange(-10, 10, 0.5)
+#         self.ccf = CCF(self.RVt, self.template)
+    
+    
+nans = np.isnan(data.wave[0,:])
+
+
+
+f = data.flux[0,~nans]
+# g = data.flux[1,~nans]
+shifts = np.arange(-5, 5., 0.1)
+
+
+def xcorr(j):
+    # nans = np.isnan(data.wave[j,:])
+    new_x = xpixels[:,np.newaxis] + shifts[np.newaxis,:] # (2048, len(shifts)))
+    g = data.flux[j,~nans]
+    g_s = np.interp(new_x[~nans,:], xpixels[~nans], g)
+    print('g_s', g_s.shape)
+    R = np.dot(f, g_s)
+    sf2 = np.dot(f, f)
+    sg2 = np.dot(g,g)
+    return R/(sf2*sg2)
+
+# ccf = vmap(align)(shifts)
+frames = np.arange(0, data.nObs)
+ccf = vmap(xcorr)(frames)
+# ccf = ccf / np.max(ccf, axis=0)
+# ccf = xcorr(1)
+# plt.plot(shifts, ccf)
+# plt.imshow(ccf.T, aspect='auto', origin='lower', extent=[shifts.min(), shifts.max(), 0, data.nObs])
+
+fig, ax = plt.subplots(1,2, figsize=(10,5))
+for i in range(0, data.nObs):
+    ax[0].plot(shifts, ccf[i,])
+    
+ccf_drift = shifts[np.argmax(ccf, axis=1)]
+ax[1].plot(frames, ccf_drift, '--o', ms=0.5)
+ax[1].set_ylim(-0.1, 0.1)
+# [plt.plot(shifts, ccf[i,]/ np.max(ccf[i,])) for i in [0,1,50]]
+plt.show()
